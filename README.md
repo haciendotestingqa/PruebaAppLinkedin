@@ -107,6 +107,13 @@ npm run dev
 
 ## Key Features Explained
 
+### Recent Enhancements
+- **Salary extraction**: pulls ranges, currency and cadence (hourly, yearly, etc.) straight from LinkedIn postings and displays them in the UI.
+- **Allowed locations**: normalizes LATAM/Venezuela friendly postings, highlights when a role explicitly lists the supported countries.
+- **Strict filtering**: only remote jobs that accept candidates in Venezuela/LATAM and reach ≥60% match are surfaced.
+- **Visual skill diff**: badges clearly show skills you have (green) vs. missing skills (red) plus a warning box with missing items.
+- **Multi-platform readiness**: the same parsing + filtering rules are applied to LinkedIn, Upwork, Turing, Freelancer and any future connectors.
+
 ### CV Parsing
 Extracts key information from resumes:
 - Personal details (name, email, phone)
@@ -126,6 +133,12 @@ Scoring algorithm considers:
 - Applies only to high-match jobs (60%+ score)
 - Distributes applications throughout the day
 - Automatic resume submission
+
+### Job Card Details
+- 💰 **Salary panel**: if present, salaries are shown in a dedicated green badge (`$50,000 - $70,000/yr`).
+- 📍 **Allowed locations**: lists every accepted country/region, prioritizing Venezuela and LATAM friendly roles.
+- 🛠️ **Skill badges**: green = skill already in your profile, red = missing skill so you can react before applying.
+- ⚠️ **Missing skill alert**: yellow callout summarizing the blockers that keep the match score below 100%.
 
 ### AI Screening
 Answers common questions:
@@ -156,7 +169,63 @@ Answers common questions:
 
 ## Contributing
 
-This is a personal project for job automation. Feel free to fork and adapt for your own use.
+We welcome contributions! This project is designed to help QA engineers automate their job search process. Whether you're fixing bugs, adding features, or improving documentation, your contributions are valuable.
+
+### How to Contribute
+
+1. **Fork the repository** and clone it to your local machine
+2. **Create a new branch** for your feature or fix:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+3. **Make your changes** following the project's code style:
+   - Use TypeScript for type safety
+   - Follow existing code patterns
+   - Add comments for complex logic
+   - Update documentation as needed
+4. **Test your changes** thoroughly:
+   ```bash
+   npm run dev
+   npm run lint
+   ```
+5. **Commit your changes** with clear, descriptive messages:
+   ```bash
+   git commit -m "feat: add new feature description"
+   ```
+6. **Push to your fork** and create a Pull Request:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+### Areas for Contribution
+
+- 🐛 **Bug fixes**: Report or fix issues you encounter
+- ✨ **New features**: Add support for new job platforms or enhance existing functionality
+- 📚 **Documentation**: Improve README, add code comments, or create guides
+- 🎨 **UI/UX improvements**: Enhance the dashboard, forms, or job cards
+- 🔧 **Code quality**: Refactor, optimize, or improve test coverage
+- 🌍 **Internationalization**: Add support for new languages or regions
+
+### Reporting Issues
+
+When reporting bugs or requesting features, please include:
+- Clear description of the issue or feature request
+- Steps to reproduce (for bugs)
+- Expected vs. actual behavior
+- Screenshots if applicable
+- Environment details (OS, Node version, browser)
+
+### Code Style
+
+- Use TypeScript strict mode
+- Follow ESLint configuration
+- Prefer functional components in React
+- Use async/await for asynchronous operations
+- Add JSDoc comments for public functions
+
+### Questions?
+
+Feel free to open an issue for questions, suggestions, or discussions about the project.
 
 ## License
 
