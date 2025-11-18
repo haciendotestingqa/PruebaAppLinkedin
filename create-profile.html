@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Crear Perfil Manual</title>
+</head>
+<body>
+    <h1>Crear Perfil QA Manualmente</h1>
+    <p>Abre la consola del navegador (F12) y ejecuta esto:</p>
+    <pre style="background: #f0f0f0; padding: 20px; border: 1px solid #ccc;">
+const profile = {
+    id: 'profile-manual',
+    name: 'Tu Nombre',
+    email: 'tu@email.com',
+    resume: 'QA Engineer con experiencia en testing',
+    skills: [
+        { name: 'Manual Testing', years: 3, level: 'intermediate', category: 'testing' },
+        { name: 'Selenium', years: 2, level: 'intermediate', category: 'automation' },
+        { name: 'Python', years: 2, level: 'intermediate', category: 'programming' },
+        { name: 'API Testing', years: 2, level: 'intermediate', category: 'testing' },
+        { name: 'Agile', years: 3, level: 'intermediate', category: 'methodology' }
+    ],
+    totalExperience: 3,
+    availability: 'immediate',
+    location: 'Venezuela / Latin America',
+    preferredLocations: ['Remote', 'Venezuela', 'Latin America'],
+    createdAt: new Date(),
+    updatedAt: new Date()
+};
+
+localStorage.setItem('qa_profile', JSON.stringify(profile));
+alert('✅ Perfil creado! Recarga la página.');
+    </pre>
+    
+    <h2>Instrucciones</h2>
+    <ol>
+        <li>Abre http://localhost:3000</li>
+        <li>Abre la consola (F12)</li>
+        <li>Copia y pega el código de arriba</li>
+        <li>Presiona Enter</li>
+        <li>Recarga la página</li>
+        <li>Ve a "Job Search" y busca trabajos</li>
+    </ol>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
