@@ -29,6 +29,126 @@ export interface AuthSession {
 }
 
 /**
+ * Función de diagnóstico para capturar información cuando aparece el error "technical difficulties"
+ */
+async function captureErrorDiagnostics(page: any, context: string): Promise<any> {
+  try {
+    const diagnostics = await page.evaluate(() => {
+      const errorElement = document.querySelector('[role="alert"], .alert-error, .alert-danger, [class*="error"], [class*="Error"]')
+      const errorText = errorElement?.textContent || ''
+      const hasTechnicalDifficulties = errorText.toLowerCase().includes('technical difficulties') ||
+                                      errorText.toLowerCase().includes('unable to process') ||
+                                      errorText.toLowerCase().includes('try again later')
+      
+      return {
+        url: window.location.href,
+        title: document.title,
+        timestamp: new Date().toISOString(),
+        hasError: hasTechnicalDifficulties,
+        errorText: errorText.substring(0, 200),
+        errorElementHTML: errorElement ? errorElement.outerHTML.substring(0, 500) : null,
+        passwordField: {
+          exists: document.querySelector('input[type="password"]') !== null,
+          hasValue: (document.querySelector('input[type="password"]') as HTMLInputElement)?.value?.length > 0 || false,
+          isVisible: (document.querySelector('input[type="password"]') as HTMLElement)?.offsetParent !== null || false,
+          isDisabled: (document.querySelector('input[type="password"]') as HTMLInputElement)?.disabled || false
+        },
+        loginButton: {
+          exists: Array.from(document.querySelectorAll('button, input[type="submit"]')).some(btn => {
+            const text = (btn.textContent || '').toLowerCase()
+            return text.includes('log in') || text.includes('login')
+          }),
+          isVisible: Array.from(document.querySelectorAll('button, input[type="submit"]')).some(btn => {
+            const text = (btn.textContent || '').toLowerCase()
+            const htmlBtn = btn as HTMLElement
+            return (text.includes('log in') || text.includes('login')) && htmlBtn.offsetParent !== null
+          })
+        },
+        formState: {
+          hasForm: document.querySelector('form') !== null,
+          formMethod: (document.querySelector('form') as HTMLFormElement)?.method || null,
+          formAction: (document.querySelector('form') as HTMLFormElement)?.action || null
+        },
+        navigator: {
+          userAgent: navigator.userAgent,
+          webdriver: (navigator as any).webdriver || false,
+          platform: navigator.platform,
+          language: navigator.language
+        },
+        cookies: document.cookie.split(';').length,
+        scriptsLoaded: Array.from(document.querySelectorAll('script')).length
+      }
+    })
+    
+    // También capturar información de red si es posible
+    const networkInfo = {
+      requestCount: 0,
+      failedRequests: 0,
+      lastRequestUrl: null
+    }
+    
+    console.log(`  🔍 [DIAGNÓSTICO ${context}] Información capturada:`)
+    console.log(`    - URL: ${diagnostics.url}`)
+    console.log(`    - Error presente: ${diagnostics.hasError}`)
+    console.log(`    - Texto del error: ${diagnostics.errorText.substring(0, 100)}...`)
+    console.log(`    - Password field: existe=${diagnostics.passwordField.exists}, tieneValor=${diagnostics.passwordField.hasValue}, visible=${diagnostics.passwordField.isVisible}`)
+    console.log(`    - Login button: existe=${diagnostics.loginButton.exists}, visible=${diagnostics.loginButton.isVisible}`)
+    console.log(`    - WebDriver detectado: ${diagnostics.navigator.webdriver}`)
+    console.log(`    - Cookies presentes: ${diagnostics.cookies}`)
+    console.log(`    - Timestamp: ${diagnostics.timestamp}`)
+    
+    return diagnostics
+  } catch (e) {
+    console.log(`  ⚠️ [DIAGNÓSTICO ${context}] Error al capturar información:`, e instanceof Error ? e.message : 'Desconocido')
+    return null
+  }
+}
+
+/**
+ * Función helper para maximizar una ventana de Puppeteer usando CDP
+ */
+async function maximizeWindow(page: any): Promise<void> {
+  try {
+    const client = await page.target().createCDPSession()
+    
+    // Obtener información de la ventana actual
+    const { windowId } = await client.send('Browser.getWindowForTarget', {
+      targetId: page.target()._targetId
+    })
+    
+    // Maximizar la ventana usando las dimensiones de la pantalla
+    await client.send('Browser.setWindowBounds', {
+      windowId: windowId,
+      bounds: {
+        windowState: 'maximized'
+      }
+    })
+    
+    console.log('  ✅ Ventana maximizada exitosamente')
+  } catch (error) {
+    // Si falla, intentar método alternativo
+    try {
+      const client = await page.target().createCDPSession()
+      const { windowId } = await client.send('Browser.getWindowForTarget', {
+        targetId: page.target()._targetId
+      })
+      
+      await client.send('Browser.setWindowBounds', {
+        windowId: windowId,
+        bounds: {
+          windowState: 'maximized'
+        }
+      })
+      
+      console.log('  ✅ Ventana maximizada (método alternativo)')
+    } catch (altError) {
+      console.log('  ⚠️ No se pudo maximizar la ventana automáticamente, continuando...')
+      // No lanzar error, solo continuar
+    }
+  }
+}
+
+/**
  * Autenticación en Upwork
  */
 export async function loginUpwork(credentials: PlatformCredentials, interactive: boolean = false): Promise<AuthSession | null> {
@@ -37,15 +157,227 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
     return null
   }
 
-  // Si se solicita modo interactivo o si detectamos captcha, usar modo visible
-  const browser = await puppeteer.launch({
-    headless: interactive ? false : true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
-    defaultViewport: interactive ? { width: 1280, height: 720 } : null
-  })
+  // Bandera para evitar intentos duplicados en la misma sesión
+  let loginAttemptInProgress = false
+
+  // Usar navegador visible para Google OAuth
+  let browser
+  try {
+    console.log('  🚀 Iniciando navegador para Upwork...')
+    browser = await puppeteer.launch({
+      headless: false, // Siempre visible para ver el proceso de Google OAuth
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage', // Evitar problemas de memoria compartida
+        '--disable-gpu', // Desactivar GPU para evitar problemas
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-extensions'
+      ],
+      defaultViewport: { width: 1920, height: 1080 }, // Tamaño más grande para ver todos los campos y botones
+      ignoreHTTPSErrors: true,
+      timeout: 60000 // 60 segundos de timeout para el lanzamiento
+    })
+    
+    // Verificar que el navegador esté conectado
+    if (!browser) {
+      throw new Error('El navegador no se pudo crear')
+    }
+    
+    // Esperar un poco más y verificar conexión múltiples veces
+    let connectionVerified = false
+    for (let i = 0; i < 5; i++) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      try {
+        if (browser.isConnected()) {
+          connectionVerified = true
+          console.log(`  ✅ Navegador conectado (intento ${i + 1}/5)`)
+          break
+        }
+      } catch (e) {
+        console.log(`  ⏳ Esperando conexión del navegador (intento ${i + 1}/5)...`)
+      }
+    }
+    
+    if (!connectionVerified) {
+      throw new Error('El navegador no se pudo conectar correctamente después de múltiples intentos')
+    }
+    
+    // Esperar un momento adicional para asegurar que el navegador esté completamente listo
+    console.log('  ⏳ Esperando a que el navegador esté completamente inicializado...')
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    // Verificación final de conexión
+    if (!browser.isConnected()) {
+      throw new Error('El navegador se desconectó durante la inicialización')
+    }
+    console.log('  ✅ Navegador listo y conectado')
+  } catch (launchError) {
+    console.error('❌ Error al lanzar el navegador:', launchError)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: `Error al lanzar el navegador: ${launchError instanceof Error ? launchError.message : 'Error desconocido'}`,
+      errorDetails: launchError instanceof Error ? launchError.stack : undefined
+    }
+  }
 
   try {
-    let page = await browser.newPage()
+    // Verificar nuevamente que el navegador esté conectado
+    if (!browser || !browser.isConnected()) {
+      throw new Error('El navegador se desconectó antes de iniciar')
+    }
+    
+    // Obtener páginas existentes (Chrome siempre abre con una página por defecto)
+    let existingPages: any[] = []
+    try {
+      // Verificar conexión antes de obtener páginas
+      if (!browser.isConnected()) {
+        throw new Error('El navegador se desconectó')
+      }
+      existingPages = await browser.pages()
+      console.log(`  📄 Páginas existentes encontradas: ${existingPages.length}`)
+    } catch (e) {
+      console.log('  ⚠️ Error al obtener páginas existentes, creando nueva...')
+      existingPages = []
+    }
+    
+    // Usar la primera página existente si está disponible y no está cerrada
+    // Si no, crear una nueva
+    let page: any = null
+    
+    if (existingPages.length > 0) {
+      const firstPage = existingPages[0]
+      try {
+        // Verificar conexión antes de verificar la página
+        if (!browser.isConnected()) {
+          throw new Error('El navegador se desconectó')
+        }
+        if (!firstPage.isClosed()) {
+          page = firstPage
+          // Ajustar el viewport de la página reutilizada para ver todos los campos y botones
+          await page.setViewport({ width: 1920, height: 1080 }).catch(() => {})
+          // Maximizar la ventana para verla completa
+          await maximizeWindow(page).catch(() => {})
+          console.log('  ✅ Reutilizando página existente del navegador (viewport ajustado: 1920x1080, maximizada)')
+          // Limpiar la página navegando a about:blank primero (opcional, no crítico)
+          try {
+            if (browser.isConnected() && !firstPage.isClosed()) {
+              await firstPage.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 3000 }).catch(() => {
+                // Ignorar errores de navegación a about:blank
+              })
+            }
+          } catch (e) {
+            console.log('  ⚠️ No se pudo limpiar la página, pero continuaremos...')
+          }
+        }
+      } catch (e) {
+        console.log('  ⚠️ La página existente no es usable, creando nueva...')
+      }
+    }
+    
+    // Si no tenemos una página válida, crear una nueva
+    if (!page) {
+      // Esperar un momento antes de crear nueva página para asegurar que el navegador esté listo
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      
+      // Verificar que el navegador siga conectado antes de crear nueva página
+      if (!browser.isConnected()) {
+        throw new Error('El navegador se desconectó antes de crear la página')
+      }
+      
+      try {
+        page = await browser.newPage()
+        // Ajustar el viewport de la página para ver todos los campos y botones
+        await page.setViewport({ width: 1920, height: 1080 })
+        // Maximizar la ventana para verla completa
+        await maximizeWindow(page)
+        console.log('  ✅ Se creó una nueva página para el login de Upwork (viewport: 1920x1080, maximizada)')
+      } catch (newPageError: any) {
+        console.error('  ❌ Error al crear nueva página:', newPageError)
+        // Esperar un poco más y verificar conexión nuevamente
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        if (!browser.isConnected()) {
+          throw new Error('El navegador se desconectó durante el intento de crear página')
+        }
+        try {
+          page = await browser.newPage()
+          // Ajustar el viewport de la página para ver todos los campos y botones
+          await page.setViewport({ width: 1920, height: 1080 })
+          // Maximizar la ventana para verla completa
+          await maximizeWindow(page)
+          console.log('  ✅ Se creó una nueva página en el segundo intento (viewport: 1920x1080, maximizada)')
+        } catch (retryError: any) {
+          throw new Error(`No se pudo crear una nueva página después de 2 intentos: ${retryError instanceof Error ? retryError.message : 'Error desconocido'}`)
+        }
+      }
+    }
+    
+    // Verificar que la página se creó correctamente
+    if (!page) {
+      throw new Error('No se pudo crear una página válida después de todos los intentos')
+    }
+    
+    // Verificar que la página no esté cerrada
+    try {
+      if (page.isClosed()) {
+        throw new Error('La página creada ya está cerrada')
+      }
+    } catch (e) {
+      throw new Error('No se pudo verificar el estado de la página: ' + (e instanceof Error ? e.message : 'Error desconocido'))
+    }
+    
+    // Marcar que el intento de login está en progreso
+    loginAttemptInProgress = true
+    
+    // Navegar DIRECTAMENTE a la URL de login sin ventanas vacías
+    const loginUrl = 'https://www.upwork.com/ab/account-security/login'
+    console.log('\n🔐 ============================================================')
+    console.log('🔐 NAVEGANDO A LA URL DE LOGIN DE UPWORK')
+    console.log('🔐 ============================================================\n')
+    console.log(`  🎯 URL objetivo: ${loginUrl}`)
+    
+    // Verificar que la página esté lista antes de navegar
+    try {
+      const currentUrl = page.url()
+      console.log(`  📍 URL actual de la página: ${currentUrl}`)
+    } catch (e) {
+      console.log('  ⚠️ No se pudo obtener la URL actual, pero continuaremos...')
+    }
+    
+    // Esperar un momento para asegurar que la página esté lista
+    console.log('  ⏳ Esperando 2 segundos antes de navegar...')
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    // NAVEGAR INMEDIATAMENTE - sin condiciones
+    console.log('  🚀 NAVEGANDO a la URL de login de Upwork AHORA...')
+    try {
+      await page.goto(loginUrl, {
+        waitUntil: 'networkidle2',
+        timeout: 45000
+      })
+      console.log('  ✅ Navegación a la URL de login completada')
+      
+      // Verificar que estamos en la URL correcta
+      const urlAfterNav = page.url()
+      console.log(`  📍 URL después de navegar: ${urlAfterNav}`)
+      
+      if (!urlAfterNav.includes('upwork.com')) {
+        console.log('  ⚠️ No estamos en Upwork, intentando nuevamente...')
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        await page.goto(loginUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        })
+        console.log('  ✅ Segunda navegación completada')
+      }
+    } catch (navError) {
+      console.error('  ❌ Error al navegar:', navError instanceof Error ? navError.message : 'Error desconocido')
+      // Continuar de todas formas - puede que la página ya esté cargada
+    }
     
     const recoverFromDetachedFrame = async (error: unknown): Promise<boolean> => {
       if (error instanceof Error && error.message && error.message.toLowerCase().includes('detached frame')) {
@@ -79,6 +411,39 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
           return await page.content()
         }
         throw error
+      }
+    }
+
+    // Función helper para verificar si una página está abierta antes de interactuar con ella
+    const isPageOpen = async (targetPage: any): Promise<boolean> => {
+      try {
+        if (!targetPage) return false
+        if (targetPage.isClosed && targetPage.isClosed()) return false
+        // Intentar acceder a una propiedad para verificar si la sesión está activa
+        await targetPage.url()
+        return true
+      } catch (e) {
+        return false
+      }
+    }
+
+    // Función helper segura para bringToFront
+    const safeBringToFront = async (targetPage: any): Promise<boolean> => {
+      try {
+        if (!await isPageOpen(targetPage)) {
+          console.log('  ⚠️ La página está cerrada, no se puede traer al frente')
+          return false
+        }
+        await targetPage.bringToFront()
+        return true
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : 'Desconocido'
+        if (errorMsg.includes('Session closed') || errorMsg.includes('page has been closed')) {
+          console.log('  ⚠️ La página se cerró, continuando sin traerla al frente...')
+        } else {
+          console.log('  ⚠️ Error al traer la página al frente:', errorMsg)
+        }
+        return false
       }
     }
 
@@ -498,35 +863,17 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
         await new Promise(resolve => setTimeout(resolve, 2000))
       }
 
-      // Intentar más veces y esperar más tiempo entre intentos
-      const maxAttempts = 20
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // Esperar un momento para que aparezca el campo de password - UN SOLO INTENTO
+      console.log('  → Esperando campo de password...')
+      await new Promise(resolve => setTimeout(resolve, 5000))
+      
         if (await isPasswordFieldVisible()) {
-          console.log(`  ✅ Campo de password detectado después de continuar (intento ${attempt + 1})`)
-          // Esperar un poco más para asegurar que el campo esté completamente cargado
+        console.log('  ✅ Campo de password detectado')
           await new Promise(resolve => setTimeout(resolve, 1500))
           return
         }
         
-        // Cada 5 intentos, intentar hacer clic en continuar de nuevo o presionar Enter
-        if (attempt > 0 && attempt % 5 === 0) {
-          console.log(`  → Reintentando hacer clic en continuar... (intento ${attempt + 1}/${maxAttempts})`)
-          try {
-            const clicked = await clickContinueToRevealPassword()
-            if (!clicked) {
-              await page.keyboard.press('Enter')
-            }
-            await new Promise(resolve => setTimeout(resolve, 2000))
-          } catch (error) {
-            // Ignorar errores
-          }
-        } else {
-          console.log(`  → Esperando campo de password... (intento ${attempt + 1}/${maxAttempts})`)
-        }
-        await new Promise(resolve => setTimeout(resolve, 1500))
-      }
-
-      console.log('  ⚠️ El campo de password no apareció después de los intentos de continuar')
+      console.log('  ⚠️ El campo de password no apareció, continuando...')
       // No lanzar error aquí, continuar con el flujo normal
     }
     
@@ -539,46 +886,3195 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
     
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    console.log('  → Navegando a página de login de Upwork...')
+    console.log('  → Verificando página de login de Upwork...')
     
-    // Usar Promise.race para evitar timeout infinito
-    // Intentar con domcontentloaded primero (más rápido), luego con load como fallback
+    // FUNCIÓN HELPER: Cerrar páginas about:blank innecesarias
+    const closeBlankPages = async (excludePage: any, waitForLoad: boolean = false) => {
+      const allPages = await browser.pages()
+      let closedCount = 0
+      
+      for (const p of allPages) {
+        if (p !== excludePage && !p.isClosed()) {
+          try {
+            const url = p.url()
+            if (url === 'about:blank') {
+              // Si waitForLoad es true, esperar un tiempo para ver si carga algo útil
+              if (waitForLoad) {
+                console.log('  → Detectada página about:blank, esperando a ver si carga contenido...')
+                await new Promise(resolve => setTimeout(resolve, 5000))
+                
+                // Verificar si ahora tiene una URL válida
+                const newUrl = p.url()
+                if (newUrl === 'about:blank' || newUrl === '') {
+                  console.log('  ⚠️ Página about:blank no cargó contenido después de esperar. Cerrando...')
+                  await p.close()
+                  closedCount++
+                  await new Promise(resolve => setTimeout(resolve, 1000))
+                } else {
+                  console.log(`  → Página about:blank cargó contenido: ${newUrl.substring(0, 50)}...`)
+                }
+              } else {
+                // Si no estamos esperando, cerrar inmediatamente si no es necesaria
+                console.log('  ⚠️ Detectada página about:blank innecesaria. Cerrando...')
+                await p.close()
+                closedCount++
+                await new Promise(resolve => setTimeout(resolve, 1000))
+              }
+            }
+          } catch (e) {
+            // Continuar
+          }
+        }
+      }
+      
+      if (closedCount > 0) {
+        console.log(`  → Se cerraron ${closedCount} página(s) about:blank`)
+      }
+      
+      return closedCount
+    }
+    
+    // FUNCIÓN HELPER: Verificar y cerrar páginas duplicadas de login
+    const closeDuplicateLoginPages = async (excludePage: any) => {
+      const allPages = await browser.pages()
+      let closedCount = 0
+      
+      // Primero cerrar páginas about:blank innecesarias
+      await closeBlankPages(excludePage, false)
+      
+      for (const p of allPages) {
+        if (p !== excludePage && !p.isClosed()) {
+          try {
+            const url = p.url()
+            if (url.includes('upwork.com/ab/account-security/login')) {
+              console.log('  ⚠️ Detectada página duplicada de login. Cerrando...')
+              await p.close()
+              closedCount++
+              // Esperar tiempo extendido después de cerrar para asegurar que se cerró completamente
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            }
+          } catch (e) {
+            // Continuar
+          }
+        }
+      }
+      
+      if (closedCount > 0) {
+        console.log(`  → Se cerraron ${closedCount} página(s) duplicada(s) de login`)
+      }
+      
+      return closedCount
+    }
+    
+    // Verificar y cerrar duplicados ANTES de navegar
+    await closeDuplicateLoginPages(page)
+    
+    // Cerrar páginas about:blank innecesarias antes de navegar
+    await closeBlankPages(page, false)
+    
+    // La variable loginUrl ya fue definida arriba, no definirla de nuevo
+    
+    console.log('\n🔐 ============================================================')
+    console.log('🔐 INICIANDO PROCESO DE LOGIN EN UPWORK')
+    console.log('🔐 ============================================================\n')
+    
+    // Verificar URL actual solo para logging
+    let currentUrlBeforeNav = ''
     try {
-      await Promise.race([
-        page.goto('https://www.upwork.com/ab/account-security/login', {
-          waitUntil: 'domcontentloaded',
-          timeout: 20000
-        }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout en goto')), 25000)
-        )
-      ])
-      console.log('  → Página cargada (domcontentloaded)')
+      currentUrlBeforeNav = page.url()
+      console.log(`  📍 URL actual antes de navegar: ${currentUrlBeforeNav}`)
+    } catch (e) {
+      console.log('  ⚠️ No se pudo obtener la URL actual (puede estar en about:blank)')
+      currentUrlBeforeNav = 'unknown'
+    }
+    
+    console.log('\n🚀 FORZANDO navegación a la URL de inicio de sesión de Upwork...')
+    console.log(`  🎯 URL objetivo: ${loginUrl}\n`)
+    
+    // Verificar una última vez antes de navegar
+    await closeDuplicateLoginPages(page)
+    await closeBlankPages(page, false)
+    
+    // Esperar un momento antes de navegar para asegurar que no haya procesos en curso
+    console.log('  ⏳ Esperando antes de navegar (3 segundos)...')
+    await new Promise(resolve => setTimeout(resolve, 3000))
+    
+    // Navegar a la URL de login usando 'domcontentloaded' para evitar refrescos innecesarios
+    console.log('  🚀 Navegando a la URL de login...\n')
+    
+    try {
+      await page.goto(loginUrl, {
+        waitUntil: 'domcontentloaded', // Cambiar a domcontentloaded para evitar esperas largas que causan refrescos
+        timeout: 30000
+      })
+      
+      // Verificar que realmente estamos en la URL correcta
+      const urlAfterNav = page.url()
+      console.log(`  → URL después de navegar: ${urlAfterNav}`)
+      
+      if (urlAfterNav.includes('upwork.com')) {
+        console.log('  ✅ Página de login de Upwork cargada correctamente')
+        
+        // Asegurar que el viewport esté ajustado después de navegar
+        try {
+          await page.setViewport({ width: 1920, height: 1080 })
+          console.log('  ✅ Viewport ajustado después de navegar (1920x1080)')
+        } catch (viewportError) {
+          console.log('  ⚠️ No se pudo ajustar el viewport después de navegar')
+        }
+        
+        // Hacer scroll para asegurar que todos los elementos sean visibles
+        try {
+          await page.evaluate(() => {
+            window.scrollTo(0, 0)
+          })
+          await new Promise(resolve => setTimeout(resolve, 500))
+        } catch (scrollError) {
+          // Continuar si hay error en el scroll
+        }
+      } else {
+        console.log(`  ⚠️ URL no es la esperada (${urlAfterNav}), pero continuando...`)
+      }
     } catch (gotoError) {
-      console.log('  ⚠️ domcontentloaded falló, intentando con load...')
+      console.log(`  ⚠️ Error al navegar:`, gotoError instanceof Error ? gotoError.message : 'Error desconocido')
+      console.log('  → Continuando con el proceso (si la página se cerró manualmente, se continuará con la siguiente plataforma)')
+      // No lanzar error - simplemente continuar, se manejará en el catch general
+    }
+    
+    // Asegurar que el viewport esté configurado antes de continuar
+    try {
+      await page.setViewport({ width: 1920, height: 1080 })
+    } catch (viewportError) {
+      // Continuar si hay error
+    }
+    
+    // PASO CRÍTICO: Cerrar popup de Privacy Policy INMEDIATAMENTE después de navegar (ANTES de cualquier espera adicional)
+    console.log('  → PASO 1: Cerrando popup de Privacy Policy INMEDIATAMENTE...')
+    let privacyPopupClosed = false
+    
+    try {
+      // Esperar solo lo mínimo necesario para que el popup aparezca (2 segundos máximo)
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      
+      // Centrar la vista de la página en lugar de ir a la esquina superior izquierda
+      try {
+        await page.evaluate(() => {
+          // Buscar el contenedor principal o formulario para centrarlo
+          const mainContent = document.querySelector('main, form, .login-container, [role="main"], .container') as HTMLElement
+          if (mainContent) {
+            mainContent.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+          } else {
+            // Si no hay contenedor específico, centrar el body
+            const bodyHeight = document.body.scrollHeight
+            const viewportHeight = window.innerHeight
+            const centerY = Math.max(0, (bodyHeight - viewportHeight) / 2)
+            window.scrollTo({ top: centerY, left: 0, behavior: 'smooth' })
+          }
+        })
+      } catch (scrollError) {
+        // Continuar si hay error
+      }
+      
+      // Buscar específicamente botones con X o ícono de cerrar - BÚSQUEDA AGRESIVA
+      const xButtonSelectors = [
+        'button[aria-label*="close" i]',
+        'button[aria-label*="×"]',
+        'button[aria-label*="X"]',
+        '[role="button"][aria-label*="close" i]',
+        '.close-button',
+        '.close',
+        'button.close',
+        '[class*="close"][class*="button"]',
+        '[class*="icon-close"]',
+        '[class*="close-icon"]',
+        'svg[class*="close"]',
+        '[data-testid*="close"]',
+        '[data-qa*="close"]',
+        'button[class*="x"]',
+        'button[class*="X"]',
+        '[aria-label="Close"]',
+        '[aria-label="close"]',
+        '[title="Close"]',
+        '[title="close"]'
+      ]
+      
+      // Primero buscar específicamente la X usando Puppeteer directamente
+      for (const selector of xButtonSelectors) {
+        try {
+          const elements = await page.$$(selector)
+          for (const element of elements) {
+            const isVisible = await page.evaluate((el: any) => {
+              const style = window.getComputedStyle(el)
+              return el && el.offsetParent !== null && 
+                     style.visibility !== 'hidden' && 
+                     style.display !== 'none' &&
+                     style.opacity !== '0'
+            }, element)
+            
+            if (isVisible) {
+              // Verificar si está dentro de un popup/modal o si es un botón de cerrar visible
+              const shouldClick = await page.evaluate((el: any) => {
+                // Si tiene aria-label de close, cerrar directamente
+                const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase()
+                if (ariaLabel.includes('close') || ariaLabel === '×' || ariaLabel === 'x') {
+                  return true
+                }
+                
+                // Verificar si está dentro de un popup/modal
+                let parent = el.parentElement
+                let depth = 0
+                while (parent && depth < 10) {
+                  const tagName = parent.tagName?.toLowerCase()
+                  const className = parent.className?.toLowerCase() || ''
+                  const id = parent.id?.toLowerCase() || ''
+                  const text = (parent.textContent || '').toLowerCase()
+                  if (tagName === 'dialog' || 
+                      className.includes('modal') || 
+                      className.includes('popup') ||
+                      className.includes('dialog') ||
+                      className.includes('privacy') ||
+                      text.includes('privacy') ||
+                      text.includes('cookie') ||
+                      id.includes('modal') ||
+                      id.includes('popup') ||
+                      id.includes('dialog') ||
+                      id.includes('privacy')) {
+                    return true
+                  }
+                  parent = parent.parentElement
+                  depth++
+                }
+                return false
+              }, element)
+              
+              if (shouldClick) {
+                try {
+                  await element.scrollIntoView()
+                  await new Promise(resolve => setTimeout(resolve, 300))
+                  await element.click({ delay: 50 })
+                  console.log(`  ✅ Popup cerrado con X (selector: ${selector})`)
+                  privacyPopupClosed = true
+                  await new Promise(resolve => setTimeout(resolve, 1000))
+                  break
+                } catch (clickError) {
+                  console.log(`  ⚠️ Error al hacer clic en selector ${selector}, intentando siguiente...`)
+                }
+              }
+            }
+          }
+          if (privacyPopupClosed) break
+        } catch (e) {
+          // Continuar con el siguiente selector
+          continue
+        }
+      }
+      
+      // Método alternativo: buscar por texto contenido
+      if (!privacyPopupClosed) {
+        try {
+          const popupClosed = await page.evaluate(() => {
+            // Buscar elementos con texto relacionado a privacy policy
+            const allElements = Array.from(document.querySelectorAll('*'))
+            
+            for (const el of allElements) {
+              const text = (el.textContent || '').toLowerCase()
+              const isPrivacyRelated = text.includes('privacy policy') || 
+                                     text.includes('cookie policy') ||
+                                     text.includes('accept cookies') ||
+                                     text.includes('accept all') ||
+                                     (text.includes('privacy') && text.includes('policy'))
+              
+              if (isPrivacyRelated) {
+                // Buscar botones de cerrar dentro de este elemento o cerca
+                const closeButtons = Array.from(el.querySelectorAll('button, [role="button"], a, [onclick]'))
+                for (const btn of closeButtons) {
+                  const btnText = (btn.textContent || btn.getAttribute('aria-label') || '').toLowerCase()
+                  const style = window.getComputedStyle(btn as HTMLElement)
+                  const isVisible = (btn as HTMLElement).offsetParent !== null && 
+                                   style.visibility !== 'hidden' && 
+                                   style.display !== 'none'
+                  
+                  if (isVisible && (btnText.includes('close') || 
+                                   btnText.includes('accept') || 
+                                   btnText.includes('dismiss') ||
+                                   btnText.includes('ok') ||
+                                   btnText.includes('got it') ||
+                                   btnText.includes('×') ||
+                                   btnText === 'x')) {
+                    (btn as HTMLElement).click()
+                    return true
+                  }
+                }
+                
+                // Si no hay botón específico, buscar botón con X o close icon
+                const closeIcon = el.querySelector('[aria-label*="close" i], [aria-label*="dismiss" i], button:has-text("×"), button:has-text("X")')
+                if (closeIcon) {
+                  (closeIcon as HTMLElement).click()
+                  return true
+                }
+              }
+            }
+            return false
+          })
+          
+          if (popupClosed) {
+            console.log('  ✅ Popup de Privacy Policy cerrado (por texto)')
+            privacyPopupClosed = true
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          }
+        } catch (e) {
+          // Continuar si falla
+        }
+      }
+      
+      if (!privacyPopupClosed) {
+        console.log('  → No se detectó popup de Privacy Policy, continuando...')
+      } else {
+        console.log('  ✅ Popup de Privacy Policy cerrado exitosamente')
+      }
+    } catch (e) {
+      console.log('  ⚠️ Error al verificar popup de Privacy Policy:', e instanceof Error ? e.message : 'Desconocido')
+      // Continuar con el flujo normal
+    }
+    
+    // Esperar solo un momento mínimo después de cerrar el popup
+    await new Promise(resolve => setTimeout(resolve, 1000))
+
+    // PASO 1: Buscar y hacer clic en botón azul "Continue with Google"
+    console.log('  → Paso 1: Buscando botón azul "Continue with Google"...')
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    // Buscar botón azul "Continue with Google" - priorizar botones azules
+    let googleBtnFound = false
+    const googleButtonSelectors = [
+      'button[class*="google"]',
+      'button[data-testid*="google"]',
+      'button[aria-label*="Google"]',
+      'a[href*="google"]',
+      '[class*="google"] button',
+      '[id*="google"] button',
+      'button[class*="google-signin"]',
+      'div[class*="google"] button'
+    ]
+    
+    for (const selector of googleButtonSelectors) {
+      try {
+        const buttons = await page.$$(selector)
+        for (const button of buttons) {
+          const buttonInfo = await page.evaluate((el: any) => {
+            const style = window.getComputedStyle(el)
+            const isVisible = el && el.offsetParent !== null && !el.disabled
+            const text = (el.textContent || '').toLowerCase().trim()
+            const isBlue = style.backgroundColor.includes('rgb') && (
+              style.backgroundColor.includes('rgb(37, 99, 235)') || // blue-600
+              style.backgroundColor.includes('rgb(29, 78, 216)') || // blue-700
+              style.backgroundColor.includes('rgb(59, 130, 246)') || // blue-500
+              style.color.includes('rgb(59, 130, 246)') ||
+              style.color.includes('rgb(37, 99, 235)')
+            )
+            return {
+              isVisible,
+              text,
+              isBlue,
+              hasGoogle: text.includes('google'),
+              hasContinue: text.includes('continue') || text.includes('sign'),
+              backgroundColor: style.backgroundColor,
+              color: style.color
+            }
+          }, button)
+          
+          if (buttonInfo.isVisible && buttonInfo.hasGoogle && buttonInfo.hasContinue) {
+            // Hacer scroll para asegurar que el botón sea completamente visible
+            await button.scrollIntoView()
+            await new Promise(resolve => setTimeout(resolve, 500))
+            // Asegurar que el viewport permita ver el botón
+            try {
+              await page.evaluate(() => {
+                window.scrollTo(0, Math.max(0, window.scrollY - 100))
+              })
+            } catch (e) {
+              // Continuar si hay error
+            }
+            await new Promise(resolve => setTimeout(resolve, 500))
+            await button.click()
+            console.log(`  ✅ Click en botón azul "Continue with Google" realizado`)
+            googleBtnFound = true
+            await new Promise(resolve => setTimeout(resolve, 3000))
+            break
+          }
+        }
+        if (googleBtnFound) break
+      } catch (e) {
+        continue
+      }
+    }
+    
+    // Si no se encontró con selectores, buscar por texto específico
+    if (!googleBtnFound) {
+      const buttonByText = await page.evaluateHandle(() => {
+        const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+        for (const btn of allButtons) {
+          const text = (btn.textContent || '').toLowerCase().trim()
+          const htmlBtn = btn as HTMLElement
+          const isVisible = htmlBtn.offsetParent !== null && !htmlBtn.hasAttribute('disabled')
+          
+          if (isVisible && text.includes('continue with google')) {
+            return btn
+          }
+        }
+        return null
+      })
+      
+      if (buttonByText && buttonByText.asElement()) {
+        await buttonByText.asElement()!.scrollIntoView()
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        await buttonByText.asElement()!.click()
+        console.log('  ✅ Click en botón "Continue with Google" realizado (por texto exacto)')
+        googleBtnFound = true
+        await new Promise(resolve => setTimeout(resolve, 3000))
+      }
+    }
+    
+    // Si se encontró y se hizo clic en el botón de Google, manejar el popup (UN SOLO PROCESO)
+    if (googleBtnFound) {
+      console.log('✅ Click en botón "Continue with Google" realizado, esperando popup...')
+      
+      // IMPORTANTE: Asegurarse de que solo hay UNA ventana principal antes de esperar el popup
+      const pagesBeforeWait = await browser.pages()
+      if (pagesBeforeWait.length > 1) {
+        console.log(`  ⚠️ Se detectaron ${pagesBeforeWait.length} ventanas antes de esperar popup. Cerrando duplicadas...`)
+        for (const p of pagesBeforeWait) {
+          if (p !== page && !p.isClosed()) {
+            try {
+              const url = p.url()
+              // Solo mantener ventanas de Google OAuth válidas o about:blank
+              if (!url.includes('accounts.google.com') && 
+                  !url.includes('google.com') && 
+                  url !== 'about:blank' &&
+                  !url.includes('upwork.com')) {
+                await p.close()
+                console.log(`  → Cerrada ventana duplicada: ${url}`)
+              }
+            } catch (e) {
+              // Continuar si hay error
+            }
+          }
+        }
+      }
+      
+      // Esperar tiempo suficiente para que se abra el popup (UNA SOLA VEZ)
+      await new Promise(resolve => setTimeout(resolve, 8000))
+      
+      // PASO 2: Detectar popup de Google OAuth (UNA SOLA DETECCIÓN)
+      let googlePage = page
+      let popupOpened = false
+      
+      // Verificar una sola vez todas las páginas disponibles
+      const allPages = await browser.pages()
+      console.log(`  → Total de páginas después del click: ${allPages.length}`)
+      
+      // Buscar el popup de Google (solo UNA vez, sin loop)
+      for (const p of allPages) {
+        if (p !== page && !p.isClosed()) {
+          try {
+            const popupUrl = p.url()
+            console.log(`  → Revisando página: ${popupUrl.substring(0, 80)}...`)
+            
+            if (popupUrl.includes('accounts.google.com') || 
+                popupUrl.includes('google.com/oauth') ||
+                popupUrl.includes('signinwithgoogle') ||
+                popupUrl === 'about:blank') {
+              googlePage = p
+              popupOpened = true
+              console.log('🔐 Detectado popup de Google OAuth')
+              
+              // Ajustar el viewport del popup para ver todos los campos y botones
+              try {
+                await googlePage.setViewport({ width: 1920, height: 1080 })
+                console.log('  ✅ Viewport del popup ajustado a 1920x1080')
+              } catch (viewportError) {
+                console.log('  ⚠️ No se pudo ajustar el viewport del popup, continuando...')
+              }
+              
+              // Maximizar la ventana popup para verla completa
+              await maximizeWindow(googlePage)
+              
+              await safeBringToFront(googlePage)
+              
+              // Si es about:blank, esperar tiempo extendido a que cargue
+              if (popupUrl === 'about:blank') {
+                console.log('  → Detectada página about:blank, esperando a que cargue contenido de Google OAuth...')
+                await new Promise(resolve => setTimeout(resolve, 8000))
+                try {
+                  await googlePage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 })
+                  const newUrl = googlePage.url()
+                  if (newUrl && newUrl !== 'about:blank' && newUrl.includes('google.com')) {
+                    console.log(`  → Página about:blank cargó correctamente: ${newUrl.substring(0, 80)}...`)
+                    
+                    // Ajustar viewport después de que cargue el contenido
+                    try {
+                      await googlePage.setViewport({ width: 1920, height: 1080 })
+                      console.log('  ✅ Viewport ajustado después de carga del contenido')
+                    } catch (viewportError) {
+                      console.log('  ⚠️ No se pudo ajustar el viewport después de la carga')
+                    }
+                    
+                    // Centrar la vista del popup en lugar de ir a la esquina superior izquierda
+                    try {
+                      await googlePage.evaluate(() => {
+                        // Buscar el contenedor principal o formulario para centrarlo
+                        const mainContent = document.querySelector('main, form, [role="main"], .container, [id*="view_container"], [id*="content"]') as HTMLElement
+                        if (mainContent) {
+                          mainContent.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+                        } else {
+                          // Si no hay contenedor específico, centrar el body
+                          const bodyHeight = document.body.scrollHeight
+                          const viewportHeight = window.innerHeight
+                          const centerY = Math.max(0, (bodyHeight - viewportHeight) / 2)
+                          window.scrollTo({ top: centerY, left: 0, behavior: 'smooth' })
+                        }
+                      })
+                    } catch (scrollError) {
+                      // Continuar si hay error
+                    }
+                  } else {
+                    console.log('  ⚠️ Página about:blank no cargó contenido válido después de esperar')
+                    // Si no carga nada útil después de esperar, podría ser una página innecesaria
+                    // Pero la mantenemos porque podría ser parte del flujo de Google
+                  }
+                } catch (e) {
+                  console.log('  ⚠️ Timeout esperando navegación en about:blank, verificando URL actual...')
+                  const currentUrl = googlePage.url()
+                  if (currentUrl === 'about:blank' || currentUrl === '') {
+                    console.log('  ⚠️ La página sigue en about:blank, podría ser innecesaria')
+                  }
+                }
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 2000))
+              
+              // Asegurar que el viewport esté ajustado antes de buscar elementos
+              try {
+                await googlePage.setViewport({ width: 1920, height: 1080 })
+              } catch (viewportError) {
+                // Continuar si hay error
+              }
+              
+              // Verificar si estamos en la página de challenge/selection y buscar "Enter your password" (resaltada en rojo)
+              try {
+                const popupUrlAfterWait = googlePage.url()
+                if (popupUrlAfterWait.includes('/challenge/selection') || popupUrlAfterWait.includes('challenge/selection')) {
+                  console.log('  → Detectada página de challenge/selection, buscando opción "Enter your password" (resaltada en rojo)...')
+                  await new Promise(resolve => setTimeout(resolve, 3000))
+                  
+                  // Buscar "Enter your password" usando Puppeteer directamente (más confiable)
+                  let passwordOptionFound = false
+                  
+                  // PRIMER MÉTODO: Buscar todos los elementos clickeables y filtrar
+                  const allClickableElements = await googlePage.$$('button, [role="button"], a, div[role="button"], li, div[role="option"], span[role="button"]')
+                  
+                  for (const element of allClickableElements) {
+                    try {
+                      const elementInfo = await googlePage.evaluate((el: any) => {
+                        const text = (el.textContent || '').toLowerCase().trim()
+                        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                        const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                        const optionElement = el as HTMLElement
+                        
+                        // Verificar si tiene un ícono de candado (padlock) - esto indica la opción resaltada en rojo
+                        const hasLockIcon = optionElement.querySelector('svg[viewBox*="lock"], svg path[d*="lock"], [class*="lock"], [aria-label*="lock"], img[alt*="lock"], [data-icon*="lock"]') !== null
+                        
+                        const hasPasswordText = text.includes('enter your password') || 
+                                               text.includes('enter password') ||
+                                               (text.includes('enter') && text.includes('password')) ||
+                                               ariaLabel.includes('enter your password') || 
+                                               ariaLabel.includes('enter password') ||
+                                               title.includes('enter your password')
+                        
+                        const isVisible = optionElement.offsetParent !== null && 
+                                         !(el as HTMLButtonElement).disabled
+                        
+                        return {
+                          hasPasswordText,
+                          hasLockIcon,
+                          isVisible,
+                          text,
+                          ariaLabel,
+                          title
+                        }
+                      }, element)
+                      
+                      // Priorizar elementos con ícono de candado Y texto "enter your password"
+                      if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                        if (elementInfo.hasLockIcon && (elementInfo.text.includes('enter your password') || elementInfo.text.includes('enter password'))) {
+                          // Esta es la opción resaltada en rojo - hacer clic inmediatamente
+                          await element.scrollIntoView()
+                          await new Promise(resolve => setTimeout(resolve, 500))
+                          // Asegurar que el elemento sea completamente visible
+                          try {
+                            await googlePage.evaluate(() => {
+                              window.scrollTo(0, Math.max(0, window.scrollY - 150))
+                            })
+                          } catch (e) {
+                            // Continuar si hay error
+                          }
+                          await new Promise(resolve => setTimeout(resolve, 500))
+                          await element.click({ delay: 100 })
+                          passwordOptionFound = true
+                          console.log('  ✅ Click en "Enter your password" realizado (con ícono de candado)')
+                          break
+                        }
+                      }
+                    } catch (e) {
+                      // Continuar con el siguiente elemento
+                      continue
+                    }
+                  }
+                  
+                  // SEGUNDO MÉTODO: Si no se encontró con ícono, buscar cualquier opción con texto "enter your password"
+                  if (!passwordOptionFound) {
+                    for (const element of allClickableElements) {
+                      try {
+                        const elementInfo = await googlePage.evaluate((el: any) => {
+                          const text = (el.textContent || '').toLowerCase().trim()
+                          const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                          const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                          const optionElement = el as HTMLElement
+                          
+                          const hasPasswordText = text.includes('enter your password') || 
+                                                 text.includes('enter password') ||
+                                                 (text.includes('enter') && text.includes('password')) ||
+                                                 ariaLabel.includes('enter your password') || 
+                                                 ariaLabel.includes('enter password') ||
+                                                 title.includes('enter your password')
+                          
+                          const isVisible = optionElement.offsetParent !== null && 
+                                           !(el as HTMLButtonElement).disabled
+                          
+                          return { hasPasswordText, isVisible, text }
+                        }, element)
+                        
+                        if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                          await element.scrollIntoView()
+                          await new Promise(resolve => setTimeout(resolve, 500))
+                          await element.click({ delay: 100 })
+                          passwordOptionFound = true
+                          console.log('  ✅ Click en "Enter your password" realizado')
+                          break
+                        }
+                      } catch (e) {
+                        continue
+                      }
+                    }
+                  }
+                  
+                  // TERCER MÉTODO: Buscar "Insert your password" como alternativa
+                  if (!passwordOptionFound) {
+                    for (const element of allClickableElements) {
+                      try {
+                        const elementInfo = await googlePage.evaluate((el: any) => {
+                          const text = (el.textContent || '').toLowerCase().trim()
+                          const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                          const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                          const optionElement = el as HTMLElement
+                          
+                          const hasPasswordText = text.includes('insert your password') || 
+                                                 text.includes('insert password') ||
+                                                 (text.includes('insert') && text.includes('password')) ||
+                                                 ariaLabel.includes('insert your password') || 
+                                                 ariaLabel.includes('insert password') ||
+                                                 title.includes('insert your password')
+                          
+                          const isVisible = optionElement.offsetParent !== null && 
+                                           !(el as HTMLButtonElement).disabled
+                          
+                          return { hasPasswordText, isVisible }
+                        }, element)
+                        
+                        if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                          await element.scrollIntoView()
+                          await new Promise(resolve => setTimeout(resolve, 500))
+                          await element.click({ delay: 100 })
+                          passwordOptionFound = true
+                          console.log('  ✅ Click en "Insert your password" realizado (alternativa)')
+                          break
+                        }
+                      } catch (e) {
+                        continue
+                      }
+                    }
+                  }
+                  
+                  if (passwordOptionFound) {
+                    console.log('  ✅ Opción de password seleccionada en challenge/selection')
+                    await new Promise(resolve => setTimeout(resolve, 4000))
+                  } else {
+                    console.log('  ⚠️ No se encontró la opción de password, continuando...')
+                  }
+                }
+              } catch (e) {
+                console.log('  ⚠️ Error al buscar opción de password:', e instanceof Error ? e.message : 'Desconocido')
+                // Continuar si hay error al verificar
+              }
+              
+              break
+            }
+          } catch (e) {
+            // Continuar con la siguiente página
+            continue
+          }
+        }
+      }
+      
+      // Si no se encontró popup separado, verificar si la página actual cambió a Google
+      if (!popupOpened) {
+        try {
+          const currentUrl = page.url()
+          if (currentUrl.includes('accounts.google.com')) {
+            googlePage = page
+            popupOpened = true
+            console.log('🔐 Detectada página de Google OAuth en la misma ventana')
+            
+            // Ajustar el viewport para ver todos los campos y botones
+            try {
+              await googlePage.setViewport({ width: 1920, height: 1080 })
+              console.log('  ✅ Viewport ajustado a 1920x1080')
+            } catch (viewportError) {
+              console.log('  ⚠️ No se pudo ajustar el viewport, continuando...')
+            }
+            
+            // Maximizar la ventana para verla completa
+            await maximizeWindow(googlePage)
+            
+            // Verificar si estamos en challenge/selection
+            if (currentUrl.includes('/challenge/selection') || currentUrl.includes('challenge/selection')) {
+              console.log('  → Detectada página de challenge/selection en página principal, buscando opción "Enter your password"...')
+              await new Promise(resolve => setTimeout(resolve, 3000))
+              
+              // Buscar "Enter your password" usando Puppeteer directamente
+              let passwordOptionFound = false
+              const allClickableElements = await googlePage.$$('button, [role="button"], a, div[role="button"], li, div[role="option"], span[role="button"]')
+              
+              // Buscar elemento con ícono de candado Y texto "enter your password"
+              for (const element of allClickableElements) {
+                try {
+                  const elementInfo = await googlePage.evaluate((el: any) => {
+                    const text = (el.textContent || '').toLowerCase().trim()
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                    const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                    const optionElement = el as HTMLElement
+                    
+                    const hasLockIcon = optionElement.querySelector('svg[viewBox*="lock"], svg path[d*="lock"], [class*="lock"], [aria-label*="lock"], img[alt*="lock"], [data-icon*="lock"]') !== null
+                    const hasPasswordText = text.includes('enter your password') || 
+                                           text.includes('enter password') ||
+                                           (text.includes('enter') && text.includes('password')) ||
+                                           ariaLabel.includes('enter your password') || 
+                                           ariaLabel.includes('enter password') ||
+                                           title.includes('enter your password')
+                    const isVisible = optionElement.offsetParent !== null && 
+                                     !(el as HTMLButtonElement).disabled
+                    
+                    return { hasPasswordText, hasLockIcon, isVisible, text }
+                  }, element)
+                  
+                  // Priorizar elemento con ícono de candado (resaltada en rojo)
+                  if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                    if (elementInfo.hasLockIcon && (elementInfo.text.includes('enter your password') || elementInfo.text.includes('enter password'))) {
+                      await element.scrollIntoView()
+                      await new Promise(resolve => setTimeout(resolve, 500))
+                      await element.click({ delay: 100 })
+                      passwordOptionFound = true
+                      console.log('  ✅ Click en "Enter your password" realizado (página principal - con ícono)')
+                      break
+                    }
+                  }
+                } catch (e) {
+                  continue
+                }
+              }
+              
+              // Si no se encontró con ícono, buscar cualquier "enter your password"
+              if (!passwordOptionFound) {
+                for (const element of allClickableElements) {
+                  try {
+                    const elementInfo = await googlePage.evaluate((el: any) => {
+                      const text = (el.textContent || '').toLowerCase().trim()
+                      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                      const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                      const optionElement = el as HTMLElement
+                      
+                      const hasPasswordText = text.includes('enter your password') || 
+                                             text.includes('enter password') ||
+                                             (text.includes('enter') && text.includes('password')) ||
+                                             ariaLabel.includes('enter your password') || 
+                                             ariaLabel.includes('enter password') ||
+                                             title.includes('enter your password')
+                      const isVisible = optionElement.offsetParent !== null && 
+                                       !(el as HTMLButtonElement).disabled
+                      
+                      return { hasPasswordText, isVisible }
+                    }, element)
+                    
+                    if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                      await element.scrollIntoView()
+                      await new Promise(resolve => setTimeout(resolve, 500))
+                      await element.click({ delay: 100 })
+                      passwordOptionFound = true
+                      console.log('  ✅ Click en "Enter your password" realizado (página principal)')
+                      break
+                    }
+                  } catch (e) {
+                    continue
+                  }
+                }
+              }
+              
+              // Alternativa: buscar "Insert your password"
+              if (!passwordOptionFound) {
+                for (const element of allClickableElements) {
+                  try {
+                    const elementInfo = await googlePage.evaluate((el: any) => {
+                      const text = (el.textContent || '').toLowerCase().trim()
+                      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                      const optionElement = el as HTMLElement
+                      
+                      const hasPasswordText = text.includes('insert your password') || 
+                                             text.includes('insert password') ||
+                                             (text.includes('insert') && text.includes('password')) ||
+                                             ariaLabel.includes('insert your password')
+                      const isVisible = optionElement.offsetParent !== null && 
+                                       !(el as HTMLButtonElement).disabled
+                      
+                      return { hasPasswordText, isVisible }
+                    }, element)
+                    
+                    if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                      await element.scrollIntoView()
+                      await new Promise(resolve => setTimeout(resolve, 500))
+                      await element.click({ delay: 100 })
+                      passwordOptionFound = true
+                      console.log('  ✅ Click en "Insert your password" realizado (página principal - alternativa)')
+                      break
+                    }
+                  } catch (e) {
+                    continue
+                  }
+                }
+              }
+              
+              if (passwordOptionFound) {
+                console.log('  ✅ Opción de password seleccionada')
+                await new Promise(resolve => setTimeout(resolve, 4000))
+              }
+            }
+          }
+        } catch (e) {
+          // Continuar
+        }
+      }
+      
+      // Asegurarse de que solo tenemos 2 páginas máximo (principal + popup de Google)
+      // IMPORTANTE: Cerrar cualquier ventana duplicada ANTES de continuar
+      if (popupOpened) {
+        const pagesAfterDetection = await browser.pages()
+        if (pagesAfterDetection.length > 2) {
+          console.log(`  ⚠️ Se detectaron ${pagesAfterDetection.length} ventanas. Cerrando duplicadas...`)
+          for (const p of pagesAfterDetection) {
+            if (p !== page && p !== googlePage && !p.isClosed()) {
+              try {
+                const urlToClose = p.url()
+                await p.close()
+                console.log(`  → Cerrada ventana duplicada: ${urlToClose.substring(0, 50)}...`)
+                await new Promise(resolve => setTimeout(resolve, 500))
+              } catch (e) {
+                // Continuar si hay error
+              }
+            }
+          }
+        }
+        
+        // Verificar nuevamente y mantener solo la ventana principal y el popup de Google
+        const finalPages = await browser.pages()
+        const googlePages = finalPages.filter((p: any) => {
+          if (p === page) return false
+          try {
+            const url = p.url()
+            return url.includes('accounts.google.com') || 
+                   url.includes('google.com') ||
+                   url === 'about:blank'
+          } catch {
+            return false
+          }
+        })
+        
+        // Si hay más de un popup de Google, mantener solo el primero y cerrar los demás
+        if (googlePages.length > 1) {
+          console.log(`  ⚠️ Se detectaron ${googlePages.length} popups de Google. Manteniendo solo uno...`)
+          for (let i = 1; i < googlePages.length; i++) {
+            try {
+              if (!googlePages[i].isClosed()) {
+                await googlePages[i].close()
+                console.log(`  → Cerrado popup duplicado de Google`)
+                await new Promise(resolve => setTimeout(resolve, 500))
+              }
+            } catch (e) {
+              // Continuar
+            }
+          }
+          // Actualizar googlePage al primero que queda
+          if (googlePages.length > 0 && !googlePages[0].isClosed()) {
+            googlePage = googlePages[0]
+          }
+        }
+      }
+      
+      // IMPORTANTE: Solo continuar si se detectó el popup o la página cambió a Google
+      if (popupOpened || page.url().includes('accounts.google.com')) {
+        // Configurar listener para detectar cuando la URL cambie a challenge/selection
+        const checkForChallengeSelection = async () => {
+          try {
+            const currentUrl = googlePage.url()
+            if (currentUrl.includes('/challenge/selection') || currentUrl.includes('challenge/selection')) {
+              console.log('  → Detectada navegación a challenge/selection, buscando opción "Enter your password"...')
+              await new Promise(resolve => setTimeout(resolve, 3000))
+              
+              // Buscar "Enter your password" usando Puppeteer directamente
+              let passwordOptionFound = false
+              const allClickableElements = await googlePage.$$('button, [role="button"], a, div[role="button"], li, div[role="option"], span[role="button"]')
+              
+              // Buscar elemento con ícono de candado Y texto "enter your password" (resaltada en rojo)
+              for (const element of allClickableElements) {
+                try {
+                  const elementInfo = await googlePage.evaluate((el: any) => {
+                    const text = (el.textContent || '').toLowerCase().trim()
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                    const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                    const optionElement = el as HTMLElement
+                    
+                    const hasLockIcon = optionElement.querySelector('svg[viewBox*="lock"], svg path[d*="lock"], [class*="lock"], [aria-label*="lock"], img[alt*="lock"], [data-icon*="lock"]') !== null
+                    const hasPasswordText = text.includes('enter your password') || 
+                                           text.includes('enter password') ||
+                                           (text.includes('enter') && text.includes('password')) ||
+                                           ariaLabel.includes('enter your password') || 
+                                           ariaLabel.includes('enter password') ||
+                                           title.includes('enter your password')
+                    const isVisible = optionElement.offsetParent !== null && 
+                                     !(el as HTMLButtonElement).disabled
+                    
+                    return { hasPasswordText, hasLockIcon, isVisible, text }
+                  }, element)
+                  
+                  // Priorizar elemento con ícono de candado
+                  if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                    if (elementInfo.hasLockIcon && (elementInfo.text.includes('enter your password') || elementInfo.text.includes('enter password'))) {
+                      await element.scrollIntoView()
+                      await new Promise(resolve => setTimeout(resolve, 500))
+                      await element.click({ delay: 100 })
+                      passwordOptionFound = true
+                      console.log('  ✅ Click en "Enter your password" realizado (listener - con ícono)')
+                      break
+                    }
+                  }
+                } catch (e) {
+                  continue
+                }
+              }
+              
+              // Si no se encontró con ícono, buscar cualquier "enter your password"
+              if (!passwordOptionFound) {
+                for (const element of allClickableElements) {
+                  try {
+                    const elementInfo = await googlePage.evaluate((el: any) => {
+                      const text = (el.textContent || '').toLowerCase().trim()
+                      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                      const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                      const optionElement = el as HTMLElement
+                      
+                      const hasPasswordText = text.includes('enter your password') || 
+                                             text.includes('enter password') ||
+                                             (text.includes('enter') && text.includes('password')) ||
+                                             ariaLabel.includes('enter your password') || 
+                                             ariaLabel.includes('enter password') ||
+                                             title.includes('enter your password')
+                      const isVisible = optionElement.offsetParent !== null && 
+                                       !(el as HTMLButtonElement).disabled
+                      
+                      return { hasPasswordText, isVisible }
+                    }, element)
+                    
+                    if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                      await element.scrollIntoView()
+                      await new Promise(resolve => setTimeout(resolve, 500))
+                      await element.click({ delay: 100 })
+                      passwordOptionFound = true
+                      console.log('  ✅ Click en "Enter your password" realizado (listener)')
+                      break
+                    }
+                  } catch (e) {
+                    continue
+                  }
+                }
+              }
+              
+              // Última alternativa: buscar "Insert your password"
+              if (!passwordOptionFound) {
+                for (const element of allClickableElements) {
+                  try {
+                    const elementInfo = await googlePage.evaluate((el: any) => {
+                      const text = (el.textContent || '').toLowerCase().trim()
+                      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                      const optionElement = el as HTMLElement
+                      
+                      const hasPasswordText = text.includes('insert your password') || 
+                                             text.includes('insert password') ||
+                                             (text.includes('insert') && text.includes('password')) ||
+                                             ariaLabel.includes('insert your password')
+                      const isVisible = optionElement.offsetParent !== null && 
+                                       !(el as HTMLButtonElement).disabled
+                      
+                      return { hasPasswordText, isVisible }
+                    }, element)
+                    
+                    if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                      await element.scrollIntoView()
+                      await new Promise(resolve => setTimeout(resolve, 500))
+                      await element.click({ delay: 100 })
+                      passwordOptionFound = true
+                      console.log('  ✅ Click en "Insert your password" realizado (listener - alternativa)')
+                      break
+                    }
+                  } catch (e) {
+                    continue
+                  }
+                }
+              }
+              
+              if (passwordOptionFound) {
+                await new Promise(resolve => setTimeout(resolve, 4000))
+                return true
+              }
+            }
+          } catch (e) {
+            // Ignorar errores en el listener
+          }
+          return false
+        }
+        
+        // Configurar listener de navegación
+        googlePage.on('framenavigated', async (frame: any) => {
+          if (frame === googlePage.mainFrame()) {
+            await checkForChallengeSelection()
+          }
+        })
+        
+        const googleUrl = googlePage.url()
+        console.log(`  → URL de Google OAuth: ${googleUrl}`)
+        
+        // Verificar inmediatamente si estamos en challenge/selection
+        await checkForChallengeSelection()
+        
+        // Asegurarse de que solo tenemos las páginas necesarias (principal + popup de Google)
+        const pagesDuringGoogle = await browser.pages()
+        if (pagesDuringGoogle.length > 2) {
+          console.log(`  ⚠️ Detectadas ${pagesDuringGoogle.length} ventanas durante flujo de Google. Cerrando duplicadas...`)
+          for (const p of pagesDuringGoogle) {
+            if (p !== page && p !== googlePage && !p.isClosed()) {
+              try {
+                await p.close()
+                console.log('  → Cerrada ventana duplicada durante flujo de Google')
+                await new Promise(resolve => setTimeout(resolve, 500))
+              } catch (e) {
+                // Continuar si hay error
+              }
+            }
+          }
+        }
+        
+        // PASO 3: Detectar y cerrar popup de "Use your security key with Google.com"
+        // IMPORTANTE: Detectar y hacer click en Cancel INMEDIATAMENTE cuando aparezca
+        try {
+          console.log('  → Paso 3: Verificando popup de security key...')
+          
+          // Verificar popup de security key - UN SOLO INTENTO
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // Verificar la URL del popup de Google - DETECCIÓN PRINCIPAL
+          let currentUrl = ''
+          try {
+            currentUrl = googlePage.url()
+          } catch (e) {
+            console.log('  ⚠️ Error obteniendo URL del popup, continuando...')
+          }
+          
+          const isSecurityKeyUrl = currentUrl.includes('/signin/challenge/pk') || 
+                                  currentUrl.includes('challenge/pk') ||
+                                  currentUrl.includes('/v3/signin/challenge/pk')
+          
+          // También verificar por contenido de la página
+          let hasSecurityKeyPopup = false
+          try {
+            hasSecurityKeyPopup = await googlePage.evaluate(() => {
+              const bodyText = (document.body?.textContent || '').toLowerCase()
+              const titleText = (document.title || '').toLowerCase()
+              
+              // Detectar el popup específico con múltiples indicadores
+              const hasSecurityKeyText = bodyText.includes('use your security key') ||
+                                         bodyText.includes('use your secury key') ||
+                                         bodyText.includes('insert your security key') ||
+                                         bodyText.includes('insert your secury key') ||
+                                         bodyText.includes('touch it') ||
+                                         titleText.includes('security key')
+              
+              // Verificar si hay un popup/modal visible con el texto
+              const hasModal = document.querySelector('[role="dialog"], .modal, [class*="modal"], [class*="popup"], [class*="dialog"]') !== null
+              
+              return hasSecurityKeyText || (hasModal && bodyText.includes('security key'))
+            })
+          } catch (e) {
+            // Continuar
+          }
+          
+          if (isSecurityKeyUrl || hasSecurityKeyPopup) {
+            console.log('  🔐 Detectado popup "Use your security key with Google.com" - URL:', currentUrl.substring(0, 80))
+            console.log('  → Haciendo click en botón "Cancel"...')
+            
+            // Esperar un momento para que el popup se renderice completamente
+            await new Promise(resolve => setTimeout(resolve, 2500))
+              
+              // Método más directo: Usar Puppeteer para buscar y hacer click en el botón
+              let cancelClicked = false
+              
+              // Intentar con Puppeteer directamente (más confiable)
+              try {
+                // Buscar botón por texto usando XPath o selector
+                const cancelButtons = await googlePage.$$eval('button, [role="button"]', (buttons: any) => {
+                  return buttons
+                    .map((btn: any, index: number) => {
+                      const text = (btn.textContent || '').trim()
+                      const htmlEl = btn as HTMLElement
+                      const style = window.getComputedStyle(htmlEl)
+                      const isVisible = htmlEl.offsetParent !== null && 
+                                       style.visibility !== 'hidden' && 
+                                       style.display !== 'none' &&
+                                       style.opacity !== '0' &&
+                                       !htmlEl.hasAttribute('disabled')
+                      
+                      if (isVisible && (text.toLowerCase() === 'cancel' || text === 'Cancel' || text === 'CANCEL')) {
+                        return { index, text, element: btn }
+                      }
+                      return null
+                    })
+                    .filter(Boolean)
+                })
+                
+                if (cancelButtons.length > 0) {
+                  // Hacer click usando Puppeteer directamente
+                  const buttons = await googlePage.$$('button, [role="button"]')
+                  for (const btnInfo of cancelButtons) {
+                    if (btnInfo && buttons[btnInfo.index]) {
+                      try {
+                        await buttons[btnInfo.index].scrollIntoView()
+                        await new Promise(resolve => setTimeout(resolve, 500))
+                        await buttons[btnInfo.index].click({ delay: 100 })
+                        cancelClicked = true
+                        console.log('  ✅ Click en botón "Cancel" realizado con Puppeteer')
+                        break
+                      } catch (clickErr) {
+                        // Continuar con el siguiente
+                        continue
+                      }
+                    }
+                  }
+                }
+              } catch (e) {
+                // Continuar con método alternativo
+              }
+              
+              // Si no funcionó con Puppeteer, usar evaluate
+              if (!cancelClicked) {
+                try {
+                  cancelClicked = await googlePage.evaluate(() => {
+                    // Buscar todos los botones
+                    const buttons = Array.from(document.querySelectorAll('button, [role="button"], div[role="button"]'))
+                    
+                    for (const btn of buttons) {
+                      const text = (btn.textContent || '').trim()
+                      const htmlEl = btn as HTMLElement
+                      const style = window.getComputedStyle(htmlEl)
+                      const isVisible = htmlEl.offsetParent !== null && 
+                                       style.visibility !== 'hidden' && 
+                                       style.display !== 'none' &&
+                                       style.opacity !== '0' &&
+                                       !htmlEl.hasAttribute('disabled')
+                      
+                      if (isVisible && (text.toLowerCase() === 'cancel' || text === 'Cancel' || text === 'CANCEL')) {
+                        try {
+                          htmlEl.scrollIntoView({ behavior: 'instant', block: 'center' })
+                          // Disparar múltiples eventos para asegurar el click
+                          const eventTypes = ['mousedown', 'focus', 'mouseup', 'click']
+                          for (let i = 0; i < eventTypes.length; i++) {
+                            const eventType = eventTypes[i]
+                            const event = new MouseEvent(eventType, {
+                              view: window,
+                              bubbles: true,
+                              cancelable: true,
+                              buttons: 1
+                            })
+                            htmlEl.dispatchEvent(event)
+                          }
+                          return true
+                        } catch (e) {
+                          continue
+                        }
+                      }
+                    }
+                    return false
+                  })
+                  
+                  if (cancelClicked) {
+                    console.log('  ✅ Click en botón "Cancel" realizado con evaluate')
+                  }
+                } catch (e) {
+                  console.log('  ⚠️ Error en método evaluate:', e)
+                }
+              }
+              
+            if (cancelClicked) {
+              // Esperar a que el popup desaparezca
+              await new Promise(resolve => setTimeout(resolve, 5000))
+              console.log('  ✅ Popup de security key cerrado exitosamente')
+            } else {
+              console.log('  ⚠️ No se pudo hacer click en "Cancel", continuando...')
+            }
+          } else {
+            console.log('  → No se detectó popup de security key, continuando con el flujo normal...')
+          }
+        } catch (e) {
+          console.log('  ⚠️ Error verificando popup de security key:', e)
+        }
+        
+        // PASO 2: Ingresar email y hacer click en Next en la nueva ventana de Google
+        try {
+          console.log('  → Paso 2: Esperando campo de email de Google en la nueva ventana...')
+          
+          // Traer la ventana de Google al frente
+          await safeBringToFront(googlePage)
+          
+          // Asegurar que el viewport del popup esté ajustado para ver todos los campos
+          try {
+            await googlePage.setViewport({ width: 1920, height: 1080 })
+            console.log('  ✅ Viewport del popup de Google ajustado a 1920x1080')
+          } catch (viewportError) {
+            console.log('  ⚠️ No se pudo ajustar el viewport del popup')
+          }
+          
+          // Maximizar la ventana popup para verla completa
+          await maximizeWindow(googlePage)
+          
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // Centrar la vista del popup en lugar de ir a la esquina superior izquierda
+          try {
+            await googlePage.evaluate(() => {
+              // Buscar el contenedor principal o formulario para centrarlo
+              const mainContent = document.querySelector('main, form, [role="main"], .container, [id*="view_container"], [id*="content"]') as HTMLElement
+              if (mainContent) {
+                mainContent.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+              } else {
+                // Si no hay contenedor específico, centrar el body
+                const bodyHeight = document.body.scrollHeight
+                const viewportHeight = window.innerHeight
+                const centerY = Math.max(0, (bodyHeight - viewportHeight) / 2)
+                window.scrollTo({ top: centerY, left: 0, behavior: 'smooth' })
+              }
+            })
+          } catch (scrollError) {
+            // Continuar si hay error
+          }
+          
+          // Esperar a que el campo de email esté disponible
+          await googlePage.waitForSelector('input[type="email"], input[name="identifier"], input[id="identifierId"]', { 
+            timeout: 20000,
+            visible: true 
+          })
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          
+          console.log('  → Campo de email encontrado, ingresando correo electrónico...')
+          
+          // Hacer scroll al campo de email para asegurar que esté completamente visible
+          try {
+            const emailInput = await googlePage.$('input[type="email"], input[name="identifier"], input[id="identifierId"]')
+            if (emailInput) {
+              await emailInput.scrollIntoView()
+              await new Promise(resolve => setTimeout(resolve, 500))
+              // Hacer scroll adicional para asegurar espacio arriba del campo
+              await googlePage.evaluate(() => {
+                window.scrollTo(0, Math.max(0, window.scrollY - 100))
+              })
+              await new Promise(resolve => setTimeout(resolve, 500))
+            }
+          } catch (scrollError) {
+            // Continuar si hay error
+          }
+          
+          // Limpiar y enfocar el campo de email
+          await googlePage.click('input[type="email"], input[name="identifier"], input[id="identifierId"]', { delay: 100 })
+          await googlePage.evaluate(() => {
+            const input = document.querySelector('input[type="email"], input[name="identifier"], input[id="identifierId"]') as HTMLInputElement
+            if (input) {
+              input.value = ''
+              input.focus()
+            }
+          })
+          
+          // Ingresar email
+          await googlePage.type('input[type="email"], input[name="identifier"], input[id="identifierId"]', credentials.email, { delay: 150 })
+          console.log('  ✅ Email ingresado:', credentials.email)
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          
+          // PASO 3: Click en botón "Next" después de ingresar el email
+          console.log('  → Paso 3: Buscando botón "Next" después de ingresar email...')
+          const nextButtonSelectors = ['#identifierNext', 'button[id*="Next"]', 'button[type="button"]']
+          
+          let nextClicked = false
+          for (const sel of nextButtonSelectors) {
+            try {
+              const nextBtn = await googlePage.$(sel)
+              if (nextBtn) {
+                const isVisible = await googlePage.evaluate((el: any) => {
+                  return el && el.offsetParent !== null && !el.disabled
+                }, nextBtn)
+                if (isVisible) {
+                  await nextBtn.scrollIntoView()
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                  // Asegurar que el botón esté completamente visible
+                  try {
+                    await googlePage.evaluate(() => {
+                      window.scrollTo(0, Math.max(0, window.scrollY - 100))
+                    })
+                  } catch (e) {
+                    // Continuar si hay error
+                  }
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                  await nextBtn.click({ delay: 100 })
+                  console.log('  ✅ Click en botón "Next" realizado')
+                  nextClicked = true
+                  break
+                }
+              }
+            } catch (e) {
+              continue
+            }
+          }
+          
+          if (!nextClicked) {
+            const nextBtnByText = await googlePage.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').toLowerCase().trim()
+                const htmlBtn = btn as HTMLElement
+                if ((text === 'next' || text === 'siguiente') && 
+                    htmlBtn.offsetParent !== null && !(htmlBtn as HTMLButtonElement).disabled) {
+                  if (htmlBtn.scrollIntoView) {
+                    htmlBtn.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  htmlBtn.click()
+                  return true
+                }
+              }
+              return false
+            })
+            if (nextBtnByText) {
+              console.log('  ✅ Click en botón "Next" realizado (por texto)')
+              nextClicked = true
+            }
+          }
+          
+          if (!nextClicked) {
+            await googlePage.keyboard.press('Enter')
+            console.log('  ✅ Presionado Enter para continuar')
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 5000))
+          
+          // PASO 6: Detectar y hacer click en "Cancel" del popup "Use your security key with Google.com"
+          console.log('  → Paso 6: Detectando popup "Use your security key with Google.com"...')
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // Buscar el popup de security key (puede estar en una nueva ventana o en el mismo popup)
+          let securityKeyPopup = null
+          const allPages = await browser.pages()
+          
+          for (const p of allPages) {
+            if (p !== page && !p.isClosed()) {
+              try {
+                const pageUrl = p.url()
+                const pageTitle = await p.title().catch(() => '')
+                const hasSecurityKeyText = await p.evaluate(() => {
+                  const bodyText = document.body?.textContent || ''
+                  const titleText = document.title || ''
+                  return bodyText.includes('Use your security key') ||
+                         bodyText.includes('Use your secury key') ||
+                         titleText.includes('security key') ||
+                         bodyText.includes('security key with Google')
+                }).catch(() => false)
+                
+                if (hasSecurityKeyText || pageUrl.includes('accounts.google.com')) {
+                  securityKeyPopup = p
+                  console.log('  → Popup de security key detectado')
+                  
+                  // Ajustar el viewport del popup para ver todos los campos y botones
+                  try {
+                    await securityKeyPopup.setViewport({ width: 1920, height: 1080 })
+                    console.log('  ✅ Viewport del popup de security key ajustado a 1920x1080')
+                  } catch (viewportError) {
+                    console.log('  ⚠️ No se pudo ajustar el viewport del popup de security key')
+                  }
+                  
+                  // Maximizar la ventana popup para verla completa
+                  await maximizeWindow(securityKeyPopup)
+                  
+                  await safeBringToFront(securityKeyPopup)
+                  
+                    // Centrar la vista del popup en lugar de ir a la esquina superior izquierda
+                    try {
+                      await securityKeyPopup.evaluate(() => {
+                        // Buscar el contenedor principal o formulario para centrarlo
+                        const mainContent = document.querySelector('main, form, [role="main"], .container, [id*="view_container"], [id*="content"]') as HTMLElement
+                        if (mainContent) {
+                          mainContent.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+                        } else {
+                          // Si no hay contenedor específico, centrar el body
+                          const bodyHeight = document.body.scrollHeight
+                          const viewportHeight = window.innerHeight
+                          const centerY = Math.max(0, (bodyHeight - viewportHeight) / 2)
+                          window.scrollTo({ top: centerY, left: 0, behavior: 'smooth' })
+                        }
+                      })
+                    } catch (scrollError) {
+                      // Continuar si hay error
+                    }
+                  
+                  await new Promise(resolve => setTimeout(resolve, 3000))
+                  break
+                }
+              } catch (e) {
+                continue
+              }
+            }
+          }
+          
+          // Si no se encontró en páginas separadas, verificar en el popup actual de Google
+          if (!securityKeyPopup) {
+            const hasSecurityKeyInGooglePage = await googlePage.evaluate(() => {
+              const bodyText = document.body?.textContent || ''
+              const titleText = document.title || ''
+              return bodyText.includes('Use your security key') ||
+                     bodyText.includes('Use your secury key') ||
+                     titleText.includes('security key') ||
+                     bodyText.includes('security key with Google')
+            })
+            
+            if (hasSecurityKeyInGooglePage) {
+              securityKeyPopup = googlePage
+              console.log('  → Popup de security key detectado en la misma ventana de Google')
+            }
+          }
+          
+          // Si se encontró el popup de security key, hacer click en "Cancel"
+          if (securityKeyPopup) {
+            console.log('  → Buscando botón "Cancel" en popup de security key...')
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            
+            // Buscar botón Cancel por múltiples métodos
+            const cancelButtonFound = await securityKeyPopup.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').trim().toLowerCase()
+                const ariaLabel = (btn.getAttribute('aria-label') || '').trim().toLowerCase()
+                const title = (btn.getAttribute('title') || '').trim().toLowerCase()
+                
+                // Buscar "cancel", "cancelar", "CANCEL", "CANCELAR"
+                if ((text === 'cancel' || text === 'cancelar' || 
+                     text === 'cancel' || text === 'cancelar' ||
+                     text.includes('cancel') || text.includes('cancelar') ||
+                     ariaLabel.includes('cancel') || ariaLabel.includes('cancelar') ||
+                     title.includes('cancel') || title.includes('cancelar')) &&
+                    (btn as HTMLElement).offsetParent !== null &&
+                    !(btn as HTMLButtonElement).disabled) {
+                  (btn as HTMLElement).click()
+                  return true
+                }
+              }
+              return false
+            })
+            
+            if (cancelButtonFound) {
+              console.log('  ✅ Click en botón "Cancel" realizado')
+              await new Promise(resolve => setTimeout(resolve, 4000))
+            } else {
+              // Buscar por texto exacto incluyendo mayúsculas
+              const cancelByText = await securityKeyPopup.evaluateHandle(() => {
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+                for (const btn of buttons) {
+                  const text = (btn.textContent || '').trim()
+                  if ((text === 'CANCEL' || text === 'CANCELAR' || text === 'Cancel' || text === 'Cancelar') &&
+                      (btn as HTMLElement).offsetParent !== null &&
+                      !(btn as HTMLButtonElement).disabled) {
+                    return btn
+                  }
+                }
+                return null
+              })
+              
+              if (cancelByText && cancelByText.asElement()) {
+                await cancelByText.asElement()!.scrollIntoView()
+                await new Promise(resolve => setTimeout(resolve, 500))
+                await cancelByText.asElement()!.click()
+                console.log('  ✅ Click en botón "CANCEL" realizado (mayúsculas)')
+                await new Promise(resolve => setTimeout(resolve, 4000))
+              }
+            }
+          }
+          
+          // PASO 7: Volver a la ventana anterior (popup de Google) y hacer click en "Try another way"
+          console.log('  → Paso 7: Volviendo a ventana anterior y buscando "Try another way"...')
+          if (!await safeBringToFront(googlePage)) {
+            console.log('  ⚠️ No se pudo traer la página de Google al frente, intentando continuar...')
+          }
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // Buscar y hacer click en "Try another way"
+          const tryAnotherWayFound = await googlePage.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"]'))
+            for (const btn of buttons) {
+              const text = (btn.textContent || '').toLowerCase().trim()
+              const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase().trim()
+              
+              if ((text.includes('try another way') || text.includes('try another') || 
+                   text.includes('intentar otra forma') || text.includes('otra forma') ||
+                   ariaLabel.includes('try another way') || ariaLabel.includes('try another')) &&
+                  (btn as HTMLElement).offsetParent !== null &&
+                  !(btn as HTMLButtonElement).disabled) {
+                const btnElement = btn as HTMLElement
+                if (btnElement.scrollIntoView) {
+                  btnElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                }
+                btnElement.click()
+                return true
+              }
+            }
+            return false
+          })
+          
+          if (tryAnotherWayFound) {
+            console.log('  ✅ Click en "Try another way" realizado')
+          } else {
+            // Buscar por texto parcial o selectores alternativos
+            const tryAnotherWayByPartial = await googlePage.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"]'))
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').toLowerCase().trim()
+                if (text.includes('another') && (btn as HTMLElement).offsetParent !== null) {
+                  (btn as HTMLElement).click()
+                  return true
+                }
+              }
+              return false
+            })
+            
+            if (tryAnotherWayByPartial) {
+              console.log('  ✅ Click en "Try another way" realizado (búsqueda parcial)')
+            }
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 4000))
+          
+          // PASO 8: Verificar si estamos en la página de challenge/selection y buscar "Insert your password"
+          console.log('  → Paso 8: Verificando URL y buscando opción de password...')
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // Verificar la URL actual del popup de Google
+          let currentGoogleUrl = ''
+          try {
+            currentGoogleUrl = googlePage.url()
+            console.log(`  → URL actual de Google: ${currentGoogleUrl.substring(0, 100)}...`)
+          } catch (e) {
+            console.log('  ⚠️ No se pudo obtener la URL de Google')
+          }
+          
+          // Si estamos en la página de challenge/selection, buscar específicamente "Enter your password" (resaltado en rojo)
+          let passwordOptionFound = false
+          if (currentGoogleUrl.includes('/challenge/selection') || currentGoogleUrl.includes('challenge/selection')) {
+            console.log('  → Detectada página de challenge/selection, buscando opción "Enter your password" (resaltada en rojo)...')
+            await new Promise(resolve => setTimeout(resolve, 3000))
+            
+            // Buscar usando Puppeteer directamente para mayor confiabilidad
+            const allClickableElements = await googlePage.$$('button, [role="button"], a, div[role="button"], li, div[role="option"], span[role="button"]')
+            
+            // Buscar elemento con ícono de candado Y texto "enter your password"
+            for (const element of allClickableElements) {
+              try {
+                const elementInfo = await googlePage.evaluate((el: any) => {
+                  const text = (el.textContent || '').toLowerCase().trim()
+                  const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                  const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                  const optionElement = el as HTMLElement
+                  
+                  const hasLockIcon = optionElement.querySelector('svg[viewBox*="lock"], svg path[d*="lock"], [class*="lock"], [aria-label*="lock"], img[alt*="lock"], [data-icon*="lock"]') !== null
+                  const hasPasswordText = text.includes('enter your password') || 
+                                         text.includes('enter password') ||
+                                         (text.includes('enter') && text.includes('password')) ||
+                                         ariaLabel.includes('enter your password') || 
+                                         ariaLabel.includes('enter password') ||
+                                         title.includes('enter your password')
+                  const isVisible = optionElement.offsetParent !== null && 
+                                   !(el as HTMLButtonElement).disabled
+                  
+                  return { hasPasswordText, hasLockIcon, isVisible, text }
+                }, element)
+                
+                // Priorizar elemento con ícono de candado (resaltada en rojo)
+                if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                  if (elementInfo.hasLockIcon && (elementInfo.text.includes('enter your password') || elementInfo.text.includes('enter password'))) {
+                    await element.scrollIntoView()
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                    await element.click({ delay: 100 })
+                    passwordOptionFound = true
+                    console.log('  ✅ Click en "Enter your password" realizado (PASO 8 - con ícono)')
+                    break
+                  }
+                }
+              } catch (e) {
+                continue
+              }
+            }
+            
+            // Si no se encontró con ícono, buscar cualquier "enter your password"
+            if (!passwordOptionFound) {
+              for (const element of allClickableElements) {
+                try {
+                  const elementInfo = await googlePage.evaluate((el: any) => {
+                    const text = (el.textContent || '').toLowerCase().trim()
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                    const title = (el.getAttribute('title') || '').toLowerCase().trim()
+                    const optionElement = el as HTMLElement
+                    
+                    const hasPasswordText = text.includes('enter your password') || 
+                                           text.includes('enter password') ||
+                                           (text.includes('enter') && text.includes('password')) ||
+                                           ariaLabel.includes('enter your password') || 
+                                           ariaLabel.includes('enter password') ||
+                                           title.includes('enter your password')
+                    const isVisible = optionElement.offsetParent !== null && 
+                                     !(el as HTMLButtonElement).disabled
+                    
+                    return { hasPasswordText, isVisible }
+                  }, element)
+                  
+                  if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                    await element.scrollIntoView()
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                    await element.click({ delay: 100 })
+                    passwordOptionFound = true
+                    console.log('  ✅ Click en "Enter your password" realizado (PASO 8)')
+                    break
+                  }
+                } catch (e) {
+                  continue
+                }
+              }
+            }
+            
+            // Alternativa: buscar "Insert your password"
+            if (!passwordOptionFound) {
+              for (const element of allClickableElements) {
+                try {
+                  const elementInfo = await googlePage.evaluate((el: any) => {
+                    const text = (el.textContent || '').toLowerCase().trim()
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                    const optionElement = el as HTMLElement
+                    
+                    const hasPasswordText = text.includes('insert your password') || 
+                                           text.includes('insert password') ||
+                                           (text.includes('insert') && text.includes('password')) ||
+                                           ariaLabel.includes('insert your password')
+                    const isVisible = optionElement.offsetParent !== null && 
+                                     !(el as HTMLButtonElement).disabled
+                    
+                    return { hasPasswordText, isVisible }
+                  }, element)
+                  
+                  if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                    await element.scrollIntoView()
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                    await element.click({ delay: 100 })
+                    passwordOptionFound = true
+                    console.log('  ✅ Click en "Insert your password" realizado (PASO 8 - alternativa)')
+                    break
+                  }
+                } catch (e) {
+                  continue
+                }
+              }
+            }
+            
+            // Última búsqueda flexible
+            if (!passwordOptionFound) {
+              for (const element of allClickableElements) {
+                try {
+                  const elementInfo = await googlePage.evaluate((el: any) => {
+                    const text = (el.textContent || '').toLowerCase().trim()
+                    const optionElement = el as HTMLElement
+                    
+                    const hasPasswordText = text.includes('password') || text.includes('contraseña')
+                    const isVisible = optionElement.offsetParent !== null && 
+                                     !(el as HTMLButtonElement).disabled
+                    
+                    return { hasPasswordText, isVisible }
+                  }, element)
+                  
+                  if (elementInfo.hasPasswordText && elementInfo.isVisible) {
+                    await element.scrollIntoView()
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                    await element.click({ delay: 100 })
+                    passwordOptionFound = true
+                    console.log('  ✅ Click en opción de password realizado (PASO 8 - búsqueda flexible)')
+                    break
+                  }
+                } catch (e) {
+                  continue
+                }
+              }
+            }
+            
+            if (passwordOptionFound) {
+              console.log('  ✅ Opción de password seleccionada en challenge/selection')
+              await new Promise(resolve => setTimeout(resolve, 4000))
+            } else {
+              console.log('  ⚠️ No se encontró la opción de password en challenge/selection')
+            }
+          }
+          
+          // Si no encontramos en challenge/selection o no estamos en esa página, buscar "Enter your password"
+          if (!passwordOptionFound) {
+            console.log('  → Buscando opción "Enter your password"...')
+            
+            const enterPasswordOptionFound = await googlePage.evaluate(() => {
+              const options = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"], li, div[role="option"]'))
+              for (const option of options) {
+                const text = (option.textContent || '').toLowerCase().trim()
+                const ariaLabel = (option.getAttribute('aria-label') || '').toLowerCase().trim()
+                
+                if ((text.includes('enter your password') || text.includes('enter password') ||
+                     text.includes('ingresar contraseña') || text.includes('ingresa tu contraseña') ||
+                     text.includes('password') ||
+                     ariaLabel.includes('enter your password') || ariaLabel.includes('password')) &&
+                    (option as HTMLElement).offsetParent !== null &&
+                    !(option as HTMLButtonElement).disabled) {
+                  const optionElement = option as HTMLElement
+                  if (optionElement.scrollIntoView) {
+                    optionElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  optionElement.click()
+                  return true
+                }
+              }
+              return false
+            })
+            
+            if (enterPasswordOptionFound) {
+              console.log('  ✅ Opción "Enter your password" seleccionada')
+              passwordOptionFound = true
+            } else {
+              // Buscar por texto parcial
+              const enterPasswordByPartial = await googlePage.evaluate(() => {
+                const options = Array.from(document.querySelectorAll('button, [role="button"], div[role="option"]'))
+                for (const option of options) {
+                  const text = (option.textContent || '').toLowerCase().trim()
+                  if (text.includes('password') && (option as HTMLElement).offsetParent !== null) {
+                    (option as HTMLElement).click()
+                    return true
+                  }
+                }
+                return false
+              })
+              
+              if (enterPasswordByPartial) {
+                console.log('  ✅ Opción "Enter your password" seleccionada (búsqueda parcial)')
+                passwordOptionFound = true
+              }
+            }
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 4000))
+          
+          // PASO 9: Esperar y completar campo de password
+          console.log('  → Paso 9: Esperando campo de password...')
+          
+          // Asegurar que el viewport esté ajustado antes de buscar el campo
+          try {
+            await googlePage.setViewport({ width: 1920, height: 1080 })
+          } catch (viewportError) {
+            // Continuar si hay error
+          }
+          
+          await googlePage.waitForSelector('input[type="password"], input[name="password"]', { 
+            timeout: 20000,
+            visible: true 
+          })
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // Hacer scroll al campo de password para asegurar que esté completamente visible
+          try {
+            const passwordInput = await googlePage.$('input[type="password"], input[name="password"]')
+            if (passwordInput) {
+              await passwordInput.scrollIntoView()
+              await new Promise(resolve => setTimeout(resolve, 500))
+              // Hacer scroll adicional para asegurar espacio arriba del campo
+              await googlePage.evaluate(() => {
+                window.scrollTo(0, Math.max(0, window.scrollY - 100))
+              })
+              await new Promise(resolve => setTimeout(resolve, 500))
+            }
+          } catch (scrollError) {
+            // Continuar si hay error
+          }
+          
+          // Limpiar y enfocar el campo de password
+          await googlePage.click('input[type="password"], input[name="password"]', { delay: 100 })
+          await googlePage.evaluate(() => {
+            const input = document.querySelector('input[type="password"], input[name="password"]') as HTMLInputElement
+            if (input) {
+              input.value = ''
+              input.focus()
+            }
+          })
+          
+          // Ingresar password con delay mayor
+          await googlePage.type('input[type="password"], input[name="password"]', credentials.password, { delay: 150 })
+          console.log('  ✅ Password ingresado')
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // PASO 7: Click en botón "Siguiente" de password
+          console.log('  → Paso 7: Buscando botón "Siguiente" de password...')
+          const passwordNextSelectors = ['#passwordNext', 'button[id*="Next"]', 'button[type="button"]']
+          
+          let passwordNextClicked = false
+          for (const sel of passwordNextSelectors) {
+            try {
+              const passwordNextBtn = await googlePage.$(sel)
+              if (passwordNextBtn) {
+                const isVisible = await googlePage.evaluate((el: any) => {
+                  return el && el.offsetParent !== null && !el.disabled
+                }, passwordNextBtn)
+                if (isVisible) {
+                  // Hacer scroll al botón para asegurar que esté visible
+                  await passwordNextBtn.scrollIntoView()
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                  // Asegurar espacio arriba del botón
+                  try {
+                    await googlePage.evaluate(() => {
+                      window.scrollTo(0, Math.max(0, window.scrollY - 100))
+                    })
+                  } catch (e) {
+                    // Continuar si hay error
+                  }
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                  await passwordNextBtn.click({ delay: 100 })
+                  console.log('  ✅ Click en botón "Siguiente" de password realizado')
+                  passwordNextClicked = true
+                  break
+                }
+              }
+            } catch (e) {
+              continue
+            }
+          }
+          
+          if (!passwordNextClicked) {
+            const passwordNextBtnByText = await googlePage.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('button'))
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').toLowerCase().trim()
+                if ((text === 'next' || text === 'siguiente') && 
+                    btn.offsetParent !== null && !(btn as HTMLButtonElement).disabled) {
+                  (btn as HTMLElement).click()
+                  return true
+                }
+              }
+              return false
+            })
+            if (passwordNextBtnByText) {
+              console.log('  ✅ Click en botón "Siguiente" de password realizado (por texto)')
+              passwordNextClicked = true
+            }
+          }
+          
+          if (!passwordNextClicked) {
+            await googlePage.keyboard.press('Enter')
+            console.log('  ✅ Presionado Enter para completar login')
+          }
+          
+          // Esperar tiempo adicional después de ingresar password para que se procese la autenticación
+          // (incluyendo la confirmación en el celular)
+          console.log('  → Esperando procesamiento de autenticación (puede incluir confirmación en celular)...')
+          await new Promise(resolve => setTimeout(resolve, 10000)) // Aumentado de 0 a 10 segundos
+          
+          // PASO 8: Detectar y hacer clic en botón "Continuar" de la pantalla de consentimiento de Google
+          console.log('  → Paso 8: Verificando si hay pantalla de consentimiento de Google...')
+          
+          // Esperar con verificación periódica para detectar la pantalla de consentimiento
+          // (puede tardar más si hay confirmación en celular)
+          let consentScreenDetected = false
+          let attempts = 0
+          const maxAttempts = 15 // Intentar durante 30 segundos (15 intentos x 2 segundos)
+          
+          while (!consentScreenDetected && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 2000)) // Esperar 2 segundos entre intentos
+            
+            // Verificar si la página está cerrada
+            try {
+              if (googlePage.isClosed()) {
+                console.log('  ⚠️ La ventana se cerró antes de detectar la pantalla de consentimiento')
+                break
+              }
+            } catch (e) {
+              console.log('  ⚠️ Error verificando si la página está cerrada')
+              break
+            }
+            
+            attempts++
+            console.log(`  → Intento ${attempts}/${maxAttempts} de detectar pantalla de consentimiento...`)
+            
+            // Verificar si estamos en la pantalla de consentimiento
+            try {
+              const currentUrl = googlePage.url()
+              const isConsentUrl = currentUrl.includes('/oauth/consent') || 
+                                   currentUrl.includes('/signin/oauth/consent') ||
+                                   currentUrl.includes('accounts.google.com') && 
+                                   (currentUrl.includes('consent') || currentUrl.includes('oauth'))
+              
+              if (isConsentUrl) {
+                console.log('  ✅ URL de consentimiento detectada:', currentUrl.substring(0, 100))
+                consentScreenDetected = true
+                break
+              }
+              
+              // También verificar por contenido de la página
+              const isConsentScreen = await googlePage.evaluate(() => {
+                const bodyText = (document.body?.textContent || '').toLowerCase()
+                const titleText = (document.title || '').toLowerCase()
+                
+                const hasConsentText = bodyText.includes('acceder con google') ||
+                                       bodyText.includes('sign in with google') ||
+                                       bodyText.includes('upwork-sso') ||
+                                       bodyText.includes('upwork') ||
+                                       titleText.includes('acceder con google') ||
+                                       titleText.includes('sign in with google') ||
+                                       bodyText.includes('continuar') ||
+                                       bodyText.includes('continue')
+                
+                return hasConsentText
+              })
+              
+              if (isConsentScreen) {
+                console.log('  ✅ Pantalla de consentimiento detectada por contenido')
+                consentScreenDetected = true
+                break
+              }
+            } catch (e) {
+              console.log(`  ⚠️ Error en intento ${attempts}:`, e instanceof Error ? e.message : 'Desconocido')
+              // Continuar con el siguiente intento
+            }
+          }
+          
+          if (!consentScreenDetected) {
+            console.log('  ⚠️ No se detectó pantalla de consentimiento después de múltiples intentos, continuando...')
+          }
+          
+          // Esperar tiempo adicional para asegurar que la pantalla esté completamente cargada
+          await new Promise(resolve => setTimeout(resolve, 5000))
+          
+          // Verificar nuevamente si estamos en la pantalla de consentimiento (después de las esperas)
+          // Detectar pantalla de consentimiento de Google (pantalla de "Acceder con Google" / "Sign in with Google")
+          let isConsentScreen = false
+          
+          try {
+            if (!googlePage.isClosed()) {
+              const currentUrl = googlePage.url()
+              const isConsentUrl = currentUrl.includes('/oauth/consent') || 
+                                   currentUrl.includes('/signin/oauth/consent') ||
+                                   (currentUrl.includes('accounts.google.com') && 
+                                    (currentUrl.includes('consent') || currentUrl.includes('oauth')))
+              
+              if (isConsentUrl) {
+                isConsentScreen = true
+                console.log('  ✅ Confirmado: Estamos en la pantalla de consentimiento (por URL)')
+              } else {
+                // Verificar por contenido
+                isConsentScreen = await googlePage.evaluate(() => {
+                  const bodyText = (document.body?.textContent || '').toLowerCase()
+                  const titleText = (document.title || '').toLowerCase()
+                  
+                  // Detectar indicadores de pantalla de consentimiento
+                  const hasConsentText = bodyText.includes('acceder con google') ||
+                                         bodyText.includes('sign in with google') ||
+                                         bodyText.includes('upwork-sso') ||
+                                         bodyText.includes('upwork') ||
+                                         titleText.includes('acceder con google') ||
+                                         titleText.includes('sign in with google') ||
+                                         bodyText.includes('continuar') ||
+                                         bodyText.includes('continue') ||
+                                         bodyText.includes('cancelar') ||
+                                         bodyText.includes('cancel')
+                  
+                  // Verificar si hay botones de consentimiento
+                  const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"]'))
+                  const hasContinueButton = buttons.some(btn => {
+                    const text = (btn.textContent || '').toLowerCase().trim()
+                    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase().trim()
+                    return text === 'continuar' || 
+                           text === 'continue' ||
+                           text.includes('continuar') ||
+                           text.includes('continue') ||
+                           ariaLabel.includes('continuar') ||
+                           ariaLabel.includes('continue')
+                  })
+                  
+                  return hasConsentText && hasContinueButton
+                })
+                
+                if (isConsentScreen) {
+                  console.log('  ✅ Confirmado: Estamos en la pantalla de consentimiento (por contenido)')
+                }
+              }
+            }
+          } catch (e) {
+            console.log('  ⚠️ Error verificando pantalla de consentimiento:', e instanceof Error ? e.message : 'Desconocido')
+          }
+          
+          if (isConsentScreen && !googlePage.isClosed()) {
+            console.log('  → Pantalla de consentimiento de Google detectada, buscando botón "Continuar"...')
+            
+            // Asegurar que la ventana esté maximizada y visible
+            await maximizeWindow(googlePage)
+            await safeBringToFront(googlePage)
+            
+            // Esperar tiempo adicional para asegurar que la página esté completamente cargada y visible
+            console.log('  → Esperando a que la pantalla de consentimiento cargue completamente...')
+            await new Promise(resolve => setTimeout(resolve, 5000))
+            
+            // Verificar nuevamente que la página no se haya cerrado
+            if (googlePage.isClosed()) {
+              console.log('  ⚠️ La ventana se cerró antes de poder hacer clic en "Continuar"')
+            } else {
+              // Buscar y hacer clic en el botón "Continuar"
+              let continueClicked = false
+            
+            // Método 1: Buscar por texto exacto "Continuar" o "Continue"
+            const continueButtonSelectors = [
+              'button:has-text("Continuar")',
+              'button:has-text("Continue")',
+              '[role="button"]:has-text("Continuar")',
+              '[role="button"]:has-text("Continue")'
+            ]
+            
+            // Método 2: Buscar todos los botones y filtrar por texto
+            const allButtons = await googlePage.$$('button, [role="button"], a, div[role="button"]')
+            
+            for (const button of allButtons) {
+              try {
+                const buttonInfo = await googlePage.evaluate((el: any) => {
+                  const text = (el.textContent || '').toLowerCase().trim()
+                  const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim()
+                  const htmlEl = el as HTMLElement
+                  const style = window.getComputedStyle(htmlEl)
+                  
+                  const isContinueButton = (text === 'continuar' || 
+                                           text === 'continue' ||
+                                           text.includes('continuar') ||
+                                           text.includes('continue') ||
+                                           ariaLabel.includes('continuar') ||
+                                           ariaLabel.includes('continue')) &&
+                                          !text.includes('cancelar') &&
+                                          !text.includes('cancel')
+                  
+                  const isVisible = htmlEl.offsetParent !== null &&
+                                   style.visibility !== 'hidden' &&
+                                   style.display !== 'none' &&
+                                   style.opacity !== '0' &&
+                                   !(el as HTMLButtonElement).disabled
+                  
+                  // Verificar si es el botón azul (generalmente el botón "Continuar" es azul)
+                  const bgColor = style.backgroundColor || ''
+                  const isBlueButton = bgColor.includes('rgb(26, 115, 232)') ||
+                                      bgColor.includes('rgb(66, 133, 244)') ||
+                                      bgColor.includes('#1a73e8') ||
+                                      bgColor.includes('#4285f4') ||
+                                      htmlEl.classList.toString().toLowerCase().includes('primary') ||
+                                      htmlEl.classList.toString().toLowerCase().includes('continue')
+                  
+                  return { isContinueButton, isVisible, isBlueButton, text }
+                }, button)
+                
+                if (buttonInfo.isContinueButton && buttonInfo.isVisible) {
+                  // Priorizar botones azules (el botón "Continuar" generalmente es azul)
+                  if (buttonInfo.isBlueButton || buttonInfo.text === 'continuar' || buttonInfo.text === 'continue') {
+                    await button.scrollIntoView()
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                    // Centrar el botón en la vista
+                    try {
+                      await googlePage.evaluate(() => {
+                        window.scrollTo(0, Math.max(0, window.scrollY - 100))
+                      })
+                    } catch (e) {
+                      // Continuar si hay error
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                    await button.click({ delay: 100 })
+                    continueClicked = true
+                    console.log('  ✅ Click en botón "Continuar" de consentimiento realizado')
+                    break
+                  }
+                }
+              } catch (e) {
+                // Continuar con el siguiente botón
+                continue
+              }
+            }
+            
+            // Método 3: Si no se encontró, buscar por texto usando evaluate
+            if (!continueClicked) {
+              const continueByText = await googlePage.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"]'))
+                for (const btn of buttons) {
+                  const text = (btn.textContent || '').toLowerCase().trim()
+                  const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase().trim()
+                  const htmlBtn = btn as HTMLElement
+                  const style = window.getComputedStyle(htmlBtn)
+                  
+                  const isContinueButton = (text === 'continuar' || 
+                                           text === 'continue' ||
+                                           text.includes('continuar') ||
+                                           text.includes('continue') ||
+                                           ariaLabel.includes('continuar') ||
+                                           ariaLabel.includes('continue')) &&
+                                          !text.includes('cancelar') &&
+                                          !text.includes('cancel')
+                  
+                  const isVisible = htmlBtn.offsetParent !== null &&
+                                   style.visibility !== 'hidden' &&
+                                   style.display !== 'none' &&
+                                   style.opacity !== '0' &&
+                                   !(htmlBtn as HTMLButtonElement).disabled
+                  
+                  if (isContinueButton && isVisible) {
+                    htmlBtn.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    htmlBtn.click()
+                    return true
+                  }
+                }
+                return false
+              })
+              
+              if (continueByText) {
+                console.log('  ✅ Click en botón "Continuar" realizado (método evaluate)')
+                continueClicked = true
+              }
+            }
+            
+              if (continueClicked) {
+                console.log('  ✅ Consentimiento de Google aceptado')
+                // Esperar tiempo adicional después de hacer clic para que se procese
+                await new Promise(resolve => setTimeout(resolve, 6000))
+              } else {
+                console.log('  ⚠️ No se encontró botón "Continuar", continuando...')
+              }
+            }
+          } else {
+            console.log('  → No se detectó pantalla de consentimiento, continuando...')
+          }
+          
+          // PASO 9: Esperar redirección a Upwork
+          console.log('  → Paso 9: Esperando redirección a Upwork...')
+          await new Promise(resolve => setTimeout(resolve, 5000))
+          
+          // Si fue un popup, esperar a que se cierre o redirija
+          if (popupOpened) {
       try {
         await Promise.race([
-          page.goto('https://www.upwork.com/ab/account-security/login', {
-            waitUntil: 'load',
-            timeout: 20000
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout en goto')), 25000)
-          )
-        ])
-        console.log('  → Página cargada (load)')
-      } catch (loadError) {
-        // Si ambos fallan, verificar si la página al menos cargó parcialmente
-        const currentUrl = page.url()
-        if (currentUrl.includes('upwork.com')) {
-          console.log('  ⚠️ La página cargó parcialmente, continuando...')
-          // Esperar un poco para que los elementos críticos carguen
+                googlePage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
+                new Promise<void>(resolve => {
+                  const checkPopup = setInterval(() => {
+                    if (googlePage.isClosed()) {
+                      clearInterval(checkPopup)
+                      resolve()
+                    }
+                  }, 500)
+                  setTimeout(() => {
+                    clearInterval(checkPopup)
+                    resolve()
+                  }, 10000)
+                })
+              ])
+              
+              if (!googlePage.isClosed()) {
+                try {
+                  const popupUrl = googlePage.url()
+                  if (popupUrl.includes('upwork.com') || !popupUrl.includes('accounts.google.com')) {
+                    console.log('  → Popup redirigido a Upwork')
+                    await new Promise(resolve => setTimeout(resolve, 2000))
+                    if (!googlePage.isClosed()) {
+                      await googlePage.close()
+                      console.log('  → Popup de Google OAuth cerrado')
+                    }
+                  }
+                } catch (e) {
+                  console.log('  → Popup de Google OAuth se cerró automáticamente')
+                }
+              } else {
+                console.log('  → Popup de Google OAuth se cerró automáticamente')
+              }
+            } catch (e) {
+              if (!googlePage.isClosed() && googlePage !== page) {
+                try {
+                  await googlePage.close()
+                  console.log('  → Popup cerrado manualmente')
+                } catch (closeError) {
+                  // Continuar si hay error
+                }
+              }
+            }
+            
+            await safeBringToFront(page)
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            
+            // Cerrar cualquier ventana adicional
+            const finalPages = await browser.pages()
+            if (finalPages.length > 1) {
+              for (const p of finalPages) {
+                if (p !== page && !p.isClosed()) {
+                  try {
+                    await p.close()
+                    console.log('  → Cerrada ventana adicional')
+                  } catch (e) {
+                    // Continuar si hay error
+                  }
+                }
+              }
+            }
+          } else {
+            try {
+              await googlePage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 })
+            } catch (e) {
+              console.log('⚠️ No se detectó navegación, continuando...')
+            }
+          }
+          
           await new Promise(resolve => setTimeout(resolve, 3000))
+          
+          // PASO 10: Verificar si se muestra pantalla de login de Upwork y completar el proceso
+          console.log('  → Paso 10: Verificando si hay pantalla de login de Upwork que requiere password...')
+          await new Promise(resolve => setTimeout(resolve, 5000))
+          
+          // Verificar en la página principal y en el popup si aún está abierto
+          const pagesToCheck: any[] = [page]
+          if (popupOpened && !googlePage.isClosed()) {
+            pagesToCheck.push(googlePage)
+          }
+          
+          for (const currentPage of pagesToCheck) {
+            try {
+              if (currentPage.isClosed()) continue
+              
+              const currentUrl = currentPage.url()
+              
+              // Verificar si estamos en una página de login de Upwork
+              const isUpworkLoginPage = currentUrl.includes('upwork.com') && 
+                                       (currentUrl.includes('/login') || 
+                                        currentUrl.includes('/ab/account-security/login') ||
+                                        currentUrl.includes('/signin'))
+              
+              // Verificar si hay un campo de password y botón "Log in" visible
+              const hasLoginForm = await currentPage.evaluate(() => {
+                const bodyText = (document.body?.textContent || '').toLowerCase()
+                const hasWelcomeText = bodyText.includes('welcome') || bodyText.includes('bienvenido')
+                const hasPasswordField = document.querySelector('input[type="password"]') !== null
+                const hasLoginButton = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).some(btn => {
+                  const text = (btn.textContent || '').toLowerCase().trim()
+                  return text === 'log in' || text === 'iniciar sesión' || text === 'login'
+                })
+                
+                return hasWelcomeText && hasPasswordField && hasLoginButton
+              })
+              
+              if (isUpworkLoginPage || hasLoginForm) {
+                console.log('  → Pantalla de login de Upwork detectada, buscando campo de password y botón "Log in"...')
+                
+                // Maximizar y traer al frente
+                await maximizeWindow(currentPage)
+                await safeBringToFront(currentPage)
+                await new Promise(resolve => setTimeout(resolve, 2000))
+                
+                // Buscar campo de password
+                const passwordSelectors = [
+                  'input[type="password"]',
+                  'input[name="password"]',
+                  'input[name="login[password]"]',
+                  'input[placeholder*="password" i]',
+                  'input[placeholder*="contraseña" i]',
+                  'input[autocomplete="current-password"]'
+                ]
+                
+                let passwordInputFound = false
+                for (const selector of passwordSelectors) {
+                  try {
+                    const passwordInput = await currentPage.$(selector)
+                    if (passwordInput) {
+                      const isVisible = await currentPage.evaluate((el: any) => {
+                        return el && el.offsetParent !== null && !el.disabled && !el.readOnly
+                      }, passwordInput)
+                      
+                      if (isVisible) {
+                        // Hacer scroll al campo
+                        await passwordInput.scrollIntoView()
+                        await new Promise(resolve => setTimeout(resolve, 500))
+                        
+                        // Centrar el campo en la vista
+                        try {
+                          await currentPage.evaluate(() => {
+                            window.scrollTo(0, Math.max(0, window.scrollY - 100))
+                          })
+                        } catch (e) {
+                          // Continuar si hay error
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 500))
+                        
+                        // Limpiar y enfocar el campo
+                        await passwordInput.click({ delay: 100 })
+                        await currentPage.evaluate((sel: string) => {
+                          const input = document.querySelector(sel) as HTMLInputElement
+                          if (input) {
+                            input.value = ''
+                            input.focus()
+                          }
+                        }, selector)
+                        
+                        // DIAGNÓSTICO: Capturar estado antes de ingresar password
+                        console.log('  🔍 [DIAGNÓSTICO] Estado antes de ingresar password:')
+                        try {
+                          const prePasswordState = await currentPage.evaluate(() => {
+                            return {
+                              url: window.location.href,
+                              hasError: document.querySelector('[role="alert"], .alert-error, [class*="error"]') !== null,
+                              passwordFieldValue: (document.querySelector('input[type="password"]') as HTMLInputElement)?.value || '',
+                              formVisible: document.querySelector('form, [role="form"]') !== null,
+                              timestamp: new Date().toISOString()
+                            }
+                          })
+                          console.log(`    - URL: ${prePasswordState.url}`)
+                          console.log(`    - Error presente: ${prePasswordState.hasError}`)
+                          console.log(`    - Campo password tiene valor: ${prePasswordState.passwordFieldValue.length > 0}`)
+                        } catch (e) {
+                          console.log('    ⚠️ No se pudo capturar estado pre-password')
+                        }
+                        
+                        // Ingresar password con delays más realistas para evitar detección
+                        console.log('  → Ingresando password con delays humanizados...')
+                        
+                        // Limpiar el campo primero si tiene valor prellenado
+                        try {
+                          await currentPage.evaluate((sel: string) => {
+                            const input = document.querySelector(sel) as HTMLInputElement
+                            if (input) {
+                              input.value = ''
+                              input.dispatchEvent(new Event('input', { bubbles: true }))
+                              input.dispatchEvent(new Event('change', { bubbles: true }))
+                            }
+                          }, selector)
+                          await new Promise(resolve => setTimeout(resolve, 500))
+                        } catch (e) {
+                          console.log('  ⚠️ No se pudo limpiar el campo de password previamente')
+                        }
+                        
+                        await currentPage.type(selector, credentials.password, { delay: 150 + Math.random() * 100 }) // Delay entre 150-250ms
+                        console.log('  ✅ Password ingresado en pantalla de login de Upwork')
+                        
+                        // DIAGNÓSTICO: Verificar que el password se ingresó correctamente
+                        try {
+                          const passwordEntered = await currentPage.evaluate((sel: string, expectedPwd: string) => {
+                            const input = document.querySelector(sel) as HTMLInputElement
+                            return input?.value === expectedPwd || input?.value.length === expectedPwd.length
+                          }, selector, credentials.password)
+                          console.log(`  🔍 [DIAGNÓSTICO] Password ingresado correctamente: ${passwordEntered}`)
+                        } catch (e) {
+                          console.log('  ⚠️ No se pudo verificar si el password se ingresó')
+                        }
+                        
+                        passwordInputFound = true
+                        
+                        // Esperar tiempo adicional antes de hacer clic para evitar detección de bot
+                        console.log('  → Esperando tiempo adicional para simular comportamiento humano...')
+                        const waitTime = 5000 + Math.random() * 3000 // Entre 5-8 segundos (aumentado)
+                        console.log(`  → Esperando ${Math.floor(waitTime / 1000)} segundos...`)
+                        await new Promise(resolve => setTimeout(resolve, waitTime))
+                        
+                        // Agregar movimiento de mouse aleatorio para simular comportamiento humano
+                        try {
+                          const passwordInputRect = await passwordInput.boundingBox()
+                          if (passwordInputRect) {
+                            await currentPage.mouse.move(
+                              passwordInputRect.x + passwordInputRect.width / 2 + (Math.random() * 50 - 25),
+                              passwordInputRect.y + passwordInputRect.height / 2 + (Math.random() * 50 - 25),
+                              { steps: 10 }
+                            )
+                            await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500))
+                          }
+                        } catch (e) {
+                          // Continuar si hay error en el movimiento del mouse
+                        }
+                        
+                        // Verificar y cerrar mensaje de error si aparece
+                        console.log('  → Verificando si hay mensaje de error...')
+                        const errorClosed = await currentPage.evaluate(() => {
+                          // Buscar mensaje de error con el texto específico
+                          const errorSelectors = [
+                            '[role="alert"]',
+                            '.alert-error',
+                            '.alert-danger',
+                            '[class*="error"]',
+                            '[class*="Error"]',
+                            '[data-testid*="error"]',
+                            '[aria-live="polite"]',
+                            '[aria-live="assertive"]'
+                          ]
+                          
+                          for (const selector of errorSelectors) {
+                            const elements = Array.from(document.querySelectorAll(selector))
+                            for (const el of elements) {
+                              const text = (el.textContent || '').toLowerCase()
+                              if (text.includes('technical difficulties') ||
+                                  text.includes('unable to process') ||
+                                  text.includes('try again later') ||
+                                  text.includes('dificultades técnicas') ||
+                                  text.includes('no podemos procesar')) {
+                                // Buscar botón de cerrar (X)
+                                const closeButton = el.querySelector('button[aria-label*="close" i], button[aria-label*="×"], .close, [class*="close"], svg[class*="close"]') as HTMLElement
+                                if (closeButton) {
+                                  closeButton.click()
+                                  return true
+                                }
+                                // Si no hay botón, intentar hacer clic en cualquier X visible
+                                const allXButtons = Array.from(document.querySelectorAll('button, [role="button"], svg'))
+                                for (const btn of allXButtons) {
+                                  const btnText = (btn.getAttribute('aria-label') || '').toLowerCase()
+                                  const btnClass = (btn.className || '').toLowerCase()
+                                  if ((btnText.includes('close') || btnText === '×' || btnText === 'x' || btnClass.includes('close')) &&
+                                      el.contains(btn)) {
+                                    (btn as HTMLElement).click()
+                                    return true
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          return false
+                        })
+                        
+                        if (errorClosed) {
+                          console.log('  ✅ Mensaje de error cerrado')
+                          await new Promise(resolve => setTimeout(resolve, 2000))
+                          
+                          // DIAGNÓSTICO: Capturar información después de cerrar el error
+                          await captureErrorDiagnostics(currentPage, 'DESPUÉS_DE_CERRAR_ERROR')
+                        } else {
+                          console.log('  → No se detectó mensaje de error o ya estaba cerrado')
+                        }
+                        
+                        // Verificar si el error aparece de nuevo después de cerrarlo
+                        await new Promise(resolve => setTimeout(resolve, 2000))
+                        const errorReappeared = await currentPage.evaluate(() => {
+                          const bodyText = (document.body?.textContent || '').toLowerCase()
+                          return bodyText.includes('technical difficulties') ||
+                                 bodyText.includes('unable to process') ||
+                                 bodyText.includes('try again later')
+                        })
+                        
+                        if (errorReappeared) {
+                          console.log('  ⚠️ El error reapareció después de cerrarlo - DIAGNÓSTICO DETALLADO:')
+                          await captureErrorDiagnostics(currentPage, 'ERROR_REAPARECIÓ')
+                        }
+                        break
+                      }
+                    }
+                  } catch (e) {
+                    // Continuar con el siguiente selector
+                    continue
+                  }
+                }
+                
+                if (passwordInputFound) {
+                  // DIAGNÓSTICO: Capturar estado antes de buscar el botón "Log in"
+                  console.log('  🔍 [DIAGNÓSTICO] Estado ANTES de buscar botón "Log in":')
+                  const diagnosticsBeforeLogin = await captureErrorDiagnostics(currentPage, 'ANTES_DE_LOGIN_BUTTON')
+                  
+                  // Verificar nuevamente si hay error antes de buscar el botón
+                  console.log('  → Verificando nuevamente mensajes de error antes de hacer clic en "Log in"...')
+                  const hasError = await currentPage.evaluate(() => {
+                    const bodyText = (document.body?.textContent || '').toLowerCase()
+                    return bodyText.includes('technical difficulties') ||
+                           bodyText.includes('unable to process') ||
+                           bodyText.includes('try again later') ||
+                           bodyText.includes('dificultades técnicas') ||
+                           bodyText.includes('no podemos procesar')
+                  })
+                  
+                  if (hasError && diagnosticsBeforeLogin) {
+                    console.log('  ⚠️ [DIAGNÓSTICO CRÍTICO] Error detectado ANTES de hacer clic en "Log in"')
+                    console.log(`    - Esto sugiere que el error apareció durante/después de ingresar el password`)
+                    console.log(`    - Posible causa: Detección de automatización o timing issue`)
+                  }
+                  
+                  if (hasError) {
+                    console.log('  ⚠️ Error detectado en la página, intentando cerrarlo nuevamente...')
+                    const errorClosedRetry = await currentPage.evaluate(() => {
+                      // Buscar y cerrar cualquier mensaje de error
+                      const errorElements = Array.from(document.querySelectorAll('[role="alert"], .alert-error, .alert-danger, [class*="error"], [class*="Error"]'))
+                      for (const el of errorElements) {
+                        const text = (el.textContent || '').toLowerCase()
+                        if (text.includes('technical difficulties') ||
+                            text.includes('unable to process') ||
+                            text.includes('try again later')) {
+                          // Buscar botón de cerrar
+                          const closeBtn = el.querySelector('button, [role="button"], .close, [class*="close"], svg') as HTMLElement
+                          if (closeBtn) {
+                            closeBtn.click()
+                            return true
+                          }
+                        }
+                      }
+                      return false
+                    })
+                    
+                    if (errorClosedRetry) {
+                      console.log('  ✅ Error cerrado en reintento')
+                      await new Promise(resolve => setTimeout(resolve, 3000))
+                    } else {
+                      console.log('  ⚠️ No se pudo cerrar el error automáticamente')
+                      // Esperar un poco más antes de continuar
+                      await new Promise(resolve => setTimeout(resolve, 5000))
+                    }
+                  }
+                  
+                  // Buscar y hacer clic en el botón "Log in"
+                  console.log('  → Buscando botón "Log in"...')
+                  await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000)) // Delay aleatorio adicional
+                  
+                  const loginButtonSelectors = [
+                    'button:has-text("Log in")',
+                    'button:has-text("Log In")',
+                    'button:has-text("LOG IN")',
+                    'button:has-text("Iniciar sesión")',
+                    'button[type="submit"]',
+                    'input[type="submit"]',
+                    'button.login-button',
+                    '[data-testid*="login"]',
+                    '[data-qa*="login"]'
+                  ]
+                  
+                  let loginButtonClicked = false
+                  
+                  // Buscar todos los botones y filtrar por texto
+                  const allButtons = await currentPage.$$('button, [role="button"], input[type="submit"]')
+                  
+                  for (const button of allButtons) {
+                    try {
+                      const buttonInfo = await currentPage.evaluate((el: any) => {
+                        const text = (el.textContent || el.value || '').toLowerCase().trim()
+                        const htmlEl = el as HTMLElement
+                        const style = window.getComputedStyle(htmlEl)
+                        
+                        const isLoginButton = (text === 'log in' || 
+                                             text === 'login' ||
+                                             text === 'iniciar sesión' ||
+                                             text === 'iniciar sesion' ||
+                                             text.includes('log in') ||
+                                             text.includes('login')) &&
+                                            !text.includes('sign up') &&
+                                            !text.includes('register')
+                        
+                        const isVisible = htmlEl.offsetParent !== null &&
+                                         style.visibility !== 'hidden' &&
+                                         style.display !== 'none' &&
+                                         style.opacity !== '0' &&
+                                         !(el as HTMLButtonElement).disabled
+                        
+                        // Verificar si es un botón verde (color común para botones de login)
+                        const bgColor = style.backgroundColor || ''
+                        const isGreenButton = bgColor.includes('rgb(14, 132, 32)') ||
+                                            bgColor.includes('#0e8420') ||
+                                            bgColor.includes('rgb(0, 132, 32)') ||
+                                            htmlEl.classList.toString().toLowerCase().includes('primary') ||
+                                            htmlEl.classList.toString().toLowerCase().includes('login')
+                        
+                        return { isLoginButton, isVisible, isGreenButton, text }
+                      }, button)
+                      
+                      if (buttonInfo.isLoginButton && buttonInfo.isVisible) {
+                        // Priorizar botones verdes (el botón "Log in" generalmente es verde)
+                        if (buttonInfo.isGreenButton || buttonInfo.text === 'log in') {
+                          await button.scrollIntoView()
+                          await new Promise(resolve => setTimeout(resolve, 500))
+                          
+                          // Centrar el botón en la vista
+                          try {
+                            await currentPage.evaluate(() => {
+                              window.scrollTo(0, Math.max(0, window.scrollY - 100))
+                            })
+                          } catch (e) {
+                            // Continuar si hay error
+                          }
+                          await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500))
+                          
+                          // Agregar movimiento de mouse al botón antes de hacer clic
+                          try {
+                            const buttonRect = await button.boundingBox()
+                            if (buttonRect) {
+                              await currentPage.mouse.move(
+                                buttonRect.x + buttonRect.width / 2 + (Math.random() * 20 - 10),
+                                buttonRect.y + buttonRect.height / 2 + (Math.random() * 20 - 10),
+                                { steps: 15 + Math.floor(Math.random() * 10) }
+                              )
+                              await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 300))
+                            }
+                          } catch (e) {
+                            // Continuar si hay error
+                          }
+                          
+                          // Hacer hover antes de click para simular comportamiento humano
+                          await button.hover()
+                          await new Promise(resolve => setTimeout(resolve, 200 + Math.random() * 300))
+                          
+                          await button.click({ delay: 150 + Math.random() * 100 })
+                          loginButtonClicked = true
+                          console.log('  ✅ Click en botón "Log in" realizado')
+                          
+                          // Esperar tiempo adicional después del clic para evitar detección
+                          await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 2000))
+                          break
+                        }
+                      }
+                    } catch (e) {
+                      // Continuar con el siguiente botón
+                      continue
+                    }
+                  }
+                  
+                  // Método alternativo: buscar por texto usando evaluate
+                  if (!loginButtonClicked) {
+                    const loginByText = await currentPage.evaluate(() => {
+                      const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
+                      for (const btn of buttons) {
+                        const text = ((btn.textContent || (btn as HTMLInputElement).value) || '').toLowerCase().trim()
+                        const htmlBtn = btn as HTMLElement
+                        const style = window.getComputedStyle(htmlBtn)
+                        
+                        const isLoginButton = (text === 'log in' || 
+                                             text === 'login' ||
+                                             text === 'iniciar sesión' ||
+                                             text.includes('log in')) &&
+                                            !text.includes('sign up')
+                        
+                        const isVisible = htmlBtn.offsetParent !== null &&
+                                         style.visibility !== 'hidden' &&
+                                         style.display !== 'none' &&
+                                         style.opacity !== '0' &&
+                                         !(htmlBtn as HTMLButtonElement).disabled
+                        
+                        if (isLoginButton && isVisible) {
+                          htmlBtn.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                          htmlBtn.click()
+                          return true
+                        }
+                      }
+                      return false
+                    })
+                    
+                    if (loginByText) {
+                      console.log('  ✅ Click en botón "Log in" realizado (método evaluate)')
+                      loginButtonClicked = true
+                    }
+                  }
+                  
+                  if (loginButtonClicked) {
+                    console.log('  ✅ Proceso de login en pantalla final de Upwork completado')
+                    
+                    // Esperar y verificar si aparece error después del clic
+                    console.log('  → Esperando respuesta del servidor después del clic en "Log in"...')
+                    
+                    // Esperar tiempo inicial para que el servidor procese
+                    await new Promise(resolve => setTimeout(resolve, 8000))
+                    
+                    // Verificar periódicamente si aparece error o si el login fue exitoso
+                    let loginSuccessful = false
+                    let errorDetected = false
+                    const maxWaitTime = 60000 // 60 segundos máximo de espera
+                    const checkInterval = 3000 // Verificar cada 3 segundos
+                    const startTime = Date.now()
+                    
+                    while (Date.now() - startTime < maxWaitTime && !loginSuccessful && !errorDetected) {
+                      try {
+                        if (currentPage.isClosed()) {
+                          console.log('  → La página se cerró, verificando si fue exitoso...')
+                          break
+                        }
+                        
+                        const currentUrl = currentPage.url()
+                        
+                        // Verificar si aparece error
+                        const hasError = await currentPage.evaluate(() => {
+                          const bodyText = (document.body?.textContent || '').toLowerCase()
+                          return bodyText.includes('technical difficulties') ||
+                                 bodyText.includes('unable to process') ||
+                                 bodyText.includes('try again later') ||
+                                 bodyText.includes('dificultades técnicas')
+                        })
+                        
+                        if (hasError) {
+                          console.log('  ⚠️ [DIAGNÓSTICO CRÍTICO] Error detectado después del clic en "Log in"')
+                          
+                          // DIAGNÓSTICO DETALLADO cuando aparece el error
+                          console.log('  🔍 [DIAGNÓSTICO] Capturando información detallada del error...')
+                          const errorDiagnostics = await captureErrorDiagnostics(currentPage, 'ERROR_DESPUÉS_DE_CLIC_LOGIN')
+                          
+                          if (errorDiagnostics) {
+                            console.log('  📋 [DIAGNÓSTICO] Información del error:')
+                            console.log(`    - Tiempo desde inicio: ${Math.floor((Date.now() - startTime) / 1000)} segundos`)
+                            console.log(`    - URL cuando apareció el error: ${errorDiagnostics.url}`)
+                            console.log(`    - Error en elemento HTML: ${errorDiagnostics.errorElementHTML ? 'Sí' : 'No'}`)
+                            console.log(`    - WebDriver detectado: ${errorDiagnostics.navigator.webdriver ? 'SÍ (PROBLEMA)' : 'No'}`)
+                            console.log(`    - Cookies presentes: ${errorDiagnostics.cookies}`)
+                          }
+                          
+                          // Intentar cerrar el error
+                          const errorClosed = await currentPage.evaluate(() => {
+                            const errorElements = Array.from(document.querySelectorAll('[role="alert"], .alert-error, .alert-danger, [class*="error"], [class*="Error"]'))
+                            for (const el of errorElements) {
+                              const text = (el.textContent || '').toLowerCase()
+                              if (text.includes('technical difficulties') ||
+                                  text.includes('unable to process')) {
+                                // Buscar botón de cerrar
+                                const closeBtn = el.querySelector('button, [role="button"], .close, [class*="close"], svg') as HTMLElement
+                                if (closeBtn) {
+                                  closeBtn.click()
+                                  return true
+                                }
+                              }
+                            }
+                            return false
+                          })
+                          
+                          if (errorClosed) {
+                            console.log('  → Error cerrado, esperando antes de continuar...')
+                            await new Promise(resolve => setTimeout(resolve, 5000))
+                            
+                            // Verificar si el error reaparece
+                            const errorReappearedAfterClose = await currentPage.evaluate(() => {
+                              const bodyText = (document.body?.textContent || '').toLowerCase()
+                              return bodyText.includes('technical difficulties') ||
+                                     bodyText.includes('unable to process') ||
+                                     bodyText.includes('try again later')
+                            })
+                            
+                            if (errorReappearedAfterClose) {
+                              console.log('  ⚠️ [DIAGNÓSTICO] El error reapareció después de cerrarlo - esto sugiere un problema persistente')
+                              errorDetected = true
+                            }
+                          } else {
+                            // Si no se puede cerrar, marcar como error pero continuar verificando
+                            errorDetected = true
+                            console.log('  ⚠️ No se pudo cerrar el error automáticamente')
+                            console.log('  💡 [DIAGNÓSTICO] Posible causa: El error es persistente y no se puede cerrar')
+                          }
+                        }
+                        
+                        // Verificar si el login fue exitoso
+                        const authStatus = await currentPage.evaluate(() => {
+                          const url = window.location.href
+                          const hasLoginPage = url.includes('/ab/account-security/login') || 
+                                              url.includes('/login') ||
+                                              url.includes('/signin')
+                          const hasDashboard = url.includes('/nx/') || 
+                                              url.includes('/freelancers/') || 
+                                              url.includes('/ab/home') || 
+                                              url.includes('/home') ||
+                                              url.includes('/jobs/') || 
+                                              url.includes('/find-work/') ||
+                                              url.includes('/my') ||
+                                              url.includes('/dashboard')
+                          
+                          const userMenu = document.querySelector('[data-test="user-menu"], .user-menu, [class*="user-menu"], [class*="userMenu"], [class*="profile-menu"]')
+                          const profileLink = document.querySelector('a[href*="/freelancers/"], a[href*="/profile"], a[href*="/freelancer"]')
+                          const logoutButton = document.querySelector('a[href*="logout"], a[href*="signout"], button[aria-label*="logout" i]')
+                          const jobSearch = document.querySelector('input[placeholder*="search" i], input[placeholder*="buscar" i], [data-test="job-search"]')
+                          
+                          return {
+                            url,
+                            hasLoginPage,
+                            hasDashboard,
+                            hasUserMenu: userMenu !== null,
+                            hasProfileLink: profileLink !== null,
+                            hasLogoutButton: logoutButton !== null,
+                            hasJobSearch: jobSearch !== null
+                          }
+                        })
+                        
+                        const isAuthenticated = !authStatus.hasLoginPage && 
+                                               (authStatus.hasDashboard || 
+                                                authStatus.hasUserMenu || 
+                                                authStatus.hasProfileLink || 
+                                                authStatus.hasLogoutButton ||
+                                                authStatus.hasJobSearch ||
+                                                (currentUrl.includes('upwork.com') && 
+                                                 !currentUrl.includes('/login') && 
+                                                 !currentUrl.includes('/ab/account-security/login') &&
+                                                 !currentUrl.includes('/signin')))
+                        
+                        if (isAuthenticated) {
+                          loginSuccessful = true
+                          console.log('  ✅ Login exitoso detectado después de hacer clic en "Log in"')
+                          console.log(`  → URL final: ${currentUrl}`)
+                          console.log(`  → Dashboard: ${authStatus.hasDashboard}, UserMenu: ${authStatus.hasUserMenu}, Profile: ${authStatus.hasProfileLink}`)
+                          break
+                        }
+                        
+                        // Log de progreso cada 15 segundos
+                        const elapsed = Math.floor((Date.now() - startTime) / 1000)
+                        if (elapsed % 15 === 0 && elapsed > 0) {
+                          console.log(`  ⏳ Esperando confirmación de login... (${elapsed}s/${maxWaitTime/1000}s) - URL: ${currentUrl.substring(0, 80)}...`)
+                        }
+                        
+                        // Esperar antes del siguiente check
+                        await new Promise(resolve => setTimeout(resolve, checkInterval))
+                        
+                      } catch (e) {
+                        console.log('  ⚠️ Error en verificación de login:', e instanceof Error ? e.message : 'Desconocido')
+                        await new Promise(resolve => setTimeout(resolve, checkInterval))
+                      }
+                    }
+                    
+                    if (loginSuccessful) {
+                      console.log('  ✅ Login completado exitosamente en pantalla final')
+                      // Continuar con la verificación final de autenticación más adelante
+                    } else if (errorDetected) {
+                      console.log('  ⚠️ Error detectado durante el proceso de login')
+                    } else {
+                      console.log('  ⚠️ Tiempo de espera agotado o no se confirmó el login exitoso')
+                    }
+                    
+                    // Esperar tiempo adicional antes de continuar con verificación final
+                    await new Promise(resolve => setTimeout(resolve, 5000))
+                  } else {
+                    console.log('  ⚠️ No se encontró botón "Log in", continuando...')
+                  }
+                } else {
+                  console.log('  ⚠️ No se encontró campo de password en pantalla de login, continuando...')
+                }
+                
+                break // Salir del loop si encontramos la pantalla de login
+              }
+            } catch (e) {
+              console.log('  ⚠️ Error verificando página para login de Upwork:', e instanceof Error ? e.message : 'Desconocido')
+              // Continuar con la siguiente página
+              continue
+            }
+          }
+          
+          // Verificar autenticación con verificaciones periódicas y tiempo extendido
+          console.log('  → Esperando tiempo adicional antes de verificación final de autenticación...')
+          await new Promise(resolve => setTimeout(resolve, 10000)) // Esperar 10 segundos adicionales
+          
+          // Verificar periódicamente si la autenticación fue exitosa
+          let finalAuthSuccess = false
+          const maxAuthWaitTime = 45000 // 45 segundos adicionales
+          const authCheckInterval = 3000 // Verificar cada 3 segundos
+          const authStartTime = Date.now()
+          
+          while (Date.now() - authStartTime < maxAuthWaitTime && !finalAuthSuccess) {
+            try {
+              // Verificar si la página principal aún está abierta
+              if (page.isClosed()) {
+                console.log('  ⚠️ La página principal se cerró, verificando otras páginas...')
+                const allPages = await browser.pages()
+                const activeUpworkPage = allPages.find((p: any) => 
+                  !p.isClosed() && p.url().includes('upwork.com') && !p.url().includes('/login') && !p.url().includes('/signin')
+                )
+                if (activeUpworkPage) {
+                  console.log('  → Encontrada página activa de Upwork, usando esa para verificación')
+                  // No actualizamos 'page' aquí, solo verificamos
+                }
+              }
+              
+              const finalUrl = page.url()
+              console.log(`  → Verificando autenticación (${Math.floor((Date.now() - authStartTime) / 1000)}s)... URL: ${finalUrl.substring(0, 80)}...`)
+              
+              const authCheck = await page.evaluate(() => {
+                const url = window.location.href
+                const hasLoginPage = url.includes('/ab/account-security/login') || 
+                                    url.includes('/login') ||
+                                    url.includes('/signin')
+                const hasDashboard = url.includes('/nx/') || 
+                                    url.includes('/freelancers/') || 
+                                    url.includes('/ab/home') || 
+                                    url.includes('/home') ||
+                                    url.includes('/jobs/') || 
+                                    url.includes('/find-work/') ||
+                                    url.includes('/my') ||
+                                    url.includes('/dashboard')
+                
+                const userMenu = document.querySelector('[data-test="user-menu"], .user-menu, [class*="user-menu"], [class*="userMenu"], [class*="profile-menu"]')
+                const profileLink = document.querySelector('a[href*="/freelancers/"], a[href*="/profile"], a[href*="/freelancer"]')
+                const logoutButton = document.querySelector('a[href*="logout"], a[href*="signout"], button[aria-label*="logout" i]')
+                const jobSearch = document.querySelector('input[placeholder*="search" i], input[placeholder*="buscar" i], [data-test="job-search"]')
+                const notifications = document.querySelector('[data-test="notifications"], [class*="notification"], [aria-label*="notification" i]')
+                
+                return {
+                  url,
+                  hasLoginPage,
+                  hasDashboard,
+                  hasUserMenu: userMenu !== null,
+                  hasProfileLink: profileLink !== null,
+                  hasLogoutButton: logoutButton !== null,
+                  hasJobSearch: jobSearch !== null,
+                  hasNotifications: notifications !== null
+                }
+              })
+              
+              const isAuthenticated = !authCheck.hasLoginPage && 
+                                     (authCheck.hasDashboard || 
+                                      authCheck.hasUserMenu || 
+                                      authCheck.hasProfileLink || 
+                                      authCheck.hasLogoutButton ||
+                                      authCheck.hasJobSearch ||
+                                      authCheck.hasNotifications ||
+                                      (finalUrl.includes('upwork.com') && 
+                                       !finalUrl.includes('/login') && 
+                                       !finalUrl.includes('/ab/account-security/login') &&
+                                       !finalUrl.includes('/signin')))
+              
+              if (isAuthenticated) {
+                finalAuthSuccess = true
+                console.log('✅ Login exitoso con Google OAuth en Upwork (verificación periódica)')
+                console.log(`  → URL: ${finalUrl}`)
+                console.log(`  → Dashboard: ${authCheck.hasDashboard}, UserMenu: ${authCheck.hasUserMenu}, Profile: ${authCheck.hasProfileLink}`)
+                
+                const cookies = await page.cookies()
+                const userAgent = await page.evaluate(() => navigator.userAgent)
+                
+                // IMPORTANTE: Cerrar todas las ventanas adicionales antes de retornar
+                const finalPagesCheck = await browser.pages()
+                if (finalPagesCheck.length > 1) {
+                  for (const p of finalPagesCheck) {
+                    if (p !== page && !p.isClosed()) {
+                      try {
+                        await p.close()
+                      } catch (e) {
+                        // Continuar si hay error
+                      }
+                    }
+                  }
+                }
+                
+                return {
+                  cookies,
+                  userAgent,
+                  isAuthenticated: true
+                }
+              }
+              
+              // Log de progreso cada 15 segundos
+              const elapsed = Math.floor((Date.now() - authStartTime) / 1000)
+              if (elapsed % 15 === 0 && elapsed > 0) {
+                console.log(`  ⏳ Esperando confirmación de autenticación... (${elapsed}s/${maxAuthWaitTime/1000}s)`)
+              }
+              
+              // Esperar antes del siguiente check
+              await new Promise(resolve => setTimeout(resolve, authCheckInterval))
+              
+            } catch (e) {
+              console.log('  ⚠️ Error en verificación periódica de autenticación:', e instanceof Error ? e.message : 'Desconocido')
+              await new Promise(resolve => setTimeout(resolve, authCheckInterval))
+            }
+          }
+          
+          // Si llegamos aquí, no se detectó autenticación exitosa
+          const finalUrl = page.url()
+          console.log(`⚠️ Login con Google completado pero no se detectó autenticación después de esperar. URL: ${finalUrl}`)
+        } catch (googleError) {
+          console.log(`⚠️ Error en login de Google: ${googleError instanceof Error ? googleError.message : 'Error desconocido'}`)
+        }
+      }
+      
+      // IMPORTANTE: Si se encontró el botón de Google, verificar una última vez si el login fue exitoso
+      // antes de continuar con cualquier otro flujo (evitar duplicación)
+      if (googleBtnFound) {
+        // Esperar un poco más y verificar una última vez si el login fue exitoso
+        await new Promise(resolve => setTimeout(resolve, 5000))
+        if (!await safeBringToFront(page)) {
+          console.log('  ⚠️ La página principal se cerró, intentando recuperar...')
+          const allPages = await browser.pages()
+          const activePage = allPages.find((p: any) => !p.isClosed() && p.url().includes('upwork.com'))
+          if (activePage) {
+            page = activePage
+            console.log('  ✅ Página recuperada')
+          }
+        }
+        
+        // Cerrar todas las ventanas adicionales primero
+        const allPagesBeforeFinalCheck = await browser.pages()
+        if (allPagesBeforeFinalCheck.length > 1) {
+          for (const p of allPagesBeforeFinalCheck) {
+            if (p !== page && !p.isClosed()) {
+              try {
+                await p.close()
+                await new Promise(resolve => setTimeout(resolve, 500))
+              } catch (e) {
+                // Continuar si hay error
+              }
+            }
+          }
+        }
+        
+        // Esperar tiempo adicional antes de verificación final
+        console.log('  → Esperando tiempo adicional antes de verificación final (15 segundos)...')
+        await new Promise(resolve => setTimeout(resolve, 15000))
+        
+        // Verificación final con múltiples intentos
+        let finalAuthSuccess = false
+        let finalAuthCheck = null
+        let finalUrlCheck = ''
+        
+        for (let attempt = 1; attempt <= 10; attempt++) {
+          try {
+            if (page.isClosed()) {
+              console.log('  ⚠️ La página se cerró durante verificación final')
+              break
+            }
+            
+            finalUrlCheck = page.url()
+            console.log(`  → Verificación final intento ${attempt}/10... URL: ${finalUrlCheck.substring(0, 80)}...`)
+            
+            finalAuthCheck = await page.evaluate(() => {
+              const url = window.location.href
+              const hasLoginPage = url.includes('/ab/account-security/login') || 
+                                  url.includes('/login') ||
+                                  url.includes('/signin')
+              const hasDashboard = url.includes('/nx/') || 
+                                  url.includes('/freelancers/') || 
+                                  url.includes('/ab/home') || 
+                                  url.includes('/home') ||
+                                  url.includes('/jobs/') || 
+                                  url.includes('/find-work/') ||
+                                  url.includes('/my') ||
+                                  url.includes('/dashboard')
+              
+              const userMenu = document.querySelector('[data-test="user-menu"], .user-menu, [class*="user-menu"], [class*="userMenu"], [class*="profile-menu"]')
+              const profileLink = document.querySelector('a[href*="/freelancers/"], a[href*="/profile"], a[href*="/freelancer"]')
+              const logoutButton = document.querySelector('a[href*="logout"], a[href*="signout"], button[aria-label*="logout" i]')
+              const jobSearch = document.querySelector('input[placeholder*="search" i], input[placeholder*="buscar" i], [data-test="job-search"]')
+              const notifications = document.querySelector('[data-test="notifications"], [class*="notification"]')
+              const messages = document.querySelector('[data-test="messages"], a[href*="/messages"]')
+              
+              return {
+                url,
+                hasLoginPage,
+                hasDashboard,
+                hasUserMenu: userMenu !== null,
+                hasProfileLink: profileLink !== null,
+                hasLogoutButton: logoutButton !== null,
+                hasJobSearch: jobSearch !== null,
+                hasNotifications: notifications !== null,
+                hasMessages: messages !== null
+              }
+            })
+            
+            const isFinalAuthenticated = !finalAuthCheck.hasLoginPage && 
+                                       (finalAuthCheck.hasDashboard || 
+                                        finalAuthCheck.hasUserMenu || 
+                                        finalAuthCheck.hasProfileLink ||
+                                        finalAuthCheck.hasLogoutButton ||
+                                        finalAuthCheck.hasJobSearch ||
+                                        finalAuthCheck.hasNotifications ||
+                                        finalAuthCheck.hasMessages ||
+                                        (finalUrlCheck.includes('upwork.com') && 
+                                         !finalUrlCheck.includes('/login') && 
+                                         !finalUrlCheck.includes('/ab/account-security/login') &&
+                                         !finalUrlCheck.includes('/signin')))
+            
+            if (isFinalAuthenticated) {
+              finalAuthSuccess = true
+              console.log(`✅ Login exitoso con Google OAuth en Upwork (verificación final - intento ${attempt})`)
+              console.log(`  → URL: ${finalUrlCheck}`)
+              console.log(`  → Dashboard: ${finalAuthCheck.hasDashboard}, UserMenu: ${finalAuthCheck.hasUserMenu}, Profile: ${finalAuthCheck.hasProfileLink}`)
+              break
+            } else if (attempt < 10) {
+              // Esperar antes del siguiente intento
+              await new Promise(resolve => setTimeout(resolve, 3000))
+            }
+          } catch (e) {
+            console.log(`  ⚠️ Error en verificación final intento ${attempt}:`, e instanceof Error ? e.message : 'Desconocido')
+            if (attempt < 10) {
+              await new Promise(resolve => setTimeout(resolve, 3000))
+            }
+          }
+        }
+        
+        if (finalAuthSuccess && finalAuthCheck) {
+          const cookies = await page.cookies()
+          const userAgent = await page.evaluate(() => navigator.userAgent)
+          
+          return {
+            cookies,
+            userAgent,
+            isAuthenticated: true
+          }
         } else {
-          throw new Error(`No se pudo cargar la página de Upwork. Error: ${gotoError instanceof Error ? gotoError.message : 'Desconocido'}`)
+          console.log(`⚠️ Login con Google no fue completamente exitoso después de 10 intentos. URL: ${finalUrlCheck}`)
+          
+          // Intentar obtener información adicional de debug
+          try {
+            const debugInfo = await page.evaluate(() => {
+              return {
+                url: window.location.href,
+                title: document.title,
+                hasLoginForm: document.querySelector('input[type="password"]') !== null,
+                hasError: document.querySelector('[role="alert"], .alert-error, [class*="error"]') !== null,
+                bodyText: document.body?.textContent?.substring(0, 200) || ''
+              }
+            })
+            console.log(`  → Debug info:`, debugInfo)
+          } catch (e) {
+            // Continuar si hay error
+          }
+          
+          // NO continuar con flujo tradicional si ya se intentó Google
+          // Retornar error en lugar de intentar flujo tradicional (evitar duplicación)
+          return {
+            cookies: await page.cookies().catch(() => []),
+            userAgent: await page.evaluate(() => navigator.userAgent).catch(() => 'Mozilla/5.0'),
+            isAuthenticated: false,
+            error: 'Login con Google no completado exitosamente después de múltiples verificaciones',
+            errorDetails: `URL final: ${finalUrlCheck}. Verifica manualmente si el login fue exitoso.`
+          }
         }
       }
     }
+    
+    // SOLO continuar con flujo tradicional si NO se encontró el botón de Google
+    // IMPORTANTE: No ejecutar flujo tradicional si ya se intentó Google (evitar duplicación)
+    if (!googleBtnFound) {
+      console.log('  ⚠️ No se encontró botón "Continue with Google", continuando con flujo tradicional...')
 
     // Esperar a que cargue el formulario
     console.log('  → Esperando formulario de login...')
@@ -587,7 +4083,6 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
       console.log('  ✅ Formulario encontrado')
     } catch (e) {
       console.log('  ⚠️ Selector estándar no encontrado, buscando alternativas...')
-      // Esperar un poco más y buscar cualquier input
       await new Promise(resolve => setTimeout(resolve, 2000))
     }
     
@@ -771,12 +4266,24 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
 
     // Intentar hacer scroll para revelar campos ocultos
     try {
+      // Intentar hacer scroll para revelar campos ocultos y luego centrar la vista
       await page.evaluate(() => {
         window.scrollTo(0, document.body.scrollHeight)
       })
       await new Promise(resolve => setTimeout(resolve, 1000))
+      // Centrar la vista en lugar de ir a la esquina superior izquierda
       await page.evaluate(() => {
-        window.scrollTo(0, 0)
+        // Buscar el contenedor principal o formulario para centrarlo
+        const mainContent = document.querySelector('main, form, .login-container, [role="main"], .container') as HTMLElement
+        if (mainContent) {
+          mainContent.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+        } else {
+          // Si no hay contenedor específico, centrar el body
+          const bodyHeight = document.body.scrollHeight
+          const viewportHeight = window.innerHeight
+          const centerY = Math.max(0, (bodyHeight - viewportHeight) / 2)
+          window.scrollTo({ top: centerY, left: 0, behavior: 'smooth' })
+        }
       })
       await new Promise(resolve => setTimeout(resolve, 1000))
     } catch (error) {
@@ -1320,6 +4827,7 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
                               currentUrl.includes('/ab/') || currentUrl.includes('/home') ||
                               currentUrl.includes('/jobs/') || currentUrl.includes('/find-work/'))))
 
+    // Nivel debería ser 1 aquí (dentro del try principal)
     if (isAuthenticated) {
       console.log('  ✅ Login exitoso en Upwork')
       const cookies = await page.cookies()
@@ -1331,41 +4839,81 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
         isAuthenticated: true
       }
     } else {
-      // Si hay captcha y no estamos en modo interactivo, intentar modo interactivo
+      // Si hay captcha y no estamos en modo interactivo, usar el mismo navegador (NO crear uno nuevo)
       if (hasCaptcha && !interactive) {
-        console.log('  🔄 Captcha detectado - cerrando navegador headless y abriendo modo interactivo...')
-        await browser.close()
-        
-        console.log('  👤 Abriendo navegador en modo visible para resolver captcha manualmente...')
+        console.log('  🔄 Captcha detectado - usando el mismo navegador para resolver captcha manualmente...')
         console.log('  📋 INSTRUCCIONES:')
-        console.log('     1. Se abrirá una ventana del navegador')
-        console.log('     2. Resuelve el captcha manualmente')
-        console.log('     3. Completa el login si es necesario')
-        console.log('     4. Espera a que la aplicación detecte el login exitoso')
-        console.log('     5. La ventana se cerrará automáticamente')
+        console.log('     1. Resuelve el captcha en la ventana actual')
+        console.log('     2. Completa el login si es necesario')
+        console.log('     3. Espera a que la aplicación detecte el login exitoso')
         
-        // Abrir navegador en modo visible
-        const interactiveBrowser = await puppeteer.launch({
-          headless: false,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
-          defaultViewport: { width: 1280, height: 720 }
-        })
+        // NO cerrar el navegador, usar el mismo que ya está abierto
+        // El navegador ya está en modo visible (headless: false)
+        // Asegurarse de que solo hay una página abierta (la de login de Upwork)
+        const allPages = await browser.pages()
+        if (allPages.length > 1) {
+          console.log(`  ⚠️ Se detectaron ${allPages.length} ventanas. Cerrando duplicadas...`)
+          for (const p of allPages) {
+            if (p !== page && !p.isClosed()) {
+              try {
+                const urlToClose = p.url()
+                // Solo mantener la página de login de Upwork
+                if (!urlToClose.includes('upwork.com/ab/account-security/login')) {
+                  await p.close()
+                  console.log(`  → Cerrada ventana duplicada: ${urlToClose.substring(0, 50)}...`)
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                }
+              } catch (e) {
+                // Continuar si hay error
+              }
+            }
+          }
+        }
+        
+        // Usar la misma página que ya está abierta (NO crear una nueva)
+        const interactivePage = page
         
         try {
-          const interactivePage = await interactiveBrowser.newPage()
+          // Verificar y cerrar duplicados antes de verificar la URL
+          const allPagesBeforeInteractive = await browser.pages()
+          for (const p of allPagesBeforeInteractive) {
+            if (p !== interactivePage && !p.isClosed()) {
+              try {
+                const url = p.url()
+                if (url.includes('upwork.com/ab/account-security/login')) {
+                  console.log('  ⚠️ Detectada página duplicada de login en modo interactivo. Cerrando...')
+                  await p.close()
+                  await new Promise(resolve => setTimeout(resolve, 300))
+                }
+              } catch (e) {
+                // Continuar
+              }
+            }
+          }
           
-          // Ocultar que es un bot
-          await interactivePage.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-              get: () => false,
-            })
-          })
-          
-          await interactivePage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-          
+          // Asegurarse de que estamos en la página de login
+          const currentUrl = interactivePage.url()
+          if (!currentUrl.includes('upwork.com/ab/account-security/login')) {
           console.log('  → Navegando a página de login de Upwork (modo interactivo)...')
           
-          // Navegar a la página de login
+            // Verificar una vez más antes de navegar
+            const finalCheckPages = await browser.pages()
+            for (const p of finalCheckPages) {
+              if (p !== interactivePage && !p.isClosed()) {
+                try {
+                  const url = p.url()
+                  if (url.includes('upwork.com/ab/account-security/login')) {
+                    console.log('  ⚠️ Detectada página duplicada justo antes de navegar. Cerrando...')
+                    await p.close()
+                    await new Promise(resolve => setTimeout(resolve, 300))
+                  }
+                } catch (e) {
+                  // Continuar
+                }
+              }
+            }
+            
+            // Navegar a la página de login SOLO si no estamos ya ahí
           try {
             await Promise.race([
               interactivePage.goto('https://www.upwork.com/ab/account-security/login', {
@@ -1388,11 +4936,48 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
                 )
               ])
             } catch (loadError) {
-              const currentUrl = interactivePage.url()
-              if (!currentUrl.includes('upwork.com')) {
+                const urlCheck = interactivePage.url()
+                if (!urlCheck.includes('upwork.com')) {
                 throw new Error(`No se pudo cargar la página de Upwork. Error: ${gotoError instanceof Error ? gotoError.message : 'Desconocido'}`)
               }
               await new Promise(resolve => setTimeout(resolve, 3000))
+              }
+            }
+            
+            // Verificar duplicados después de navegar
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            const pagesAfterNav = await browser.pages()
+            for (const p of pagesAfterNav) {
+              if (p !== interactivePage && !p.isClosed()) {
+                try {
+                  const url = p.url()
+                  if (url.includes('upwork.com/ab/account-security/login')) {
+                    console.log('  ⚠️ Detectada página duplicada después de navegar. Cerrando...')
+                    await p.close()
+                    await new Promise(resolve => setTimeout(resolve, 300))
+                  }
+                } catch (e) {
+                  // Continuar
+                }
+              }
+            }
+          } else {
+            console.log('  → Ya estamos en la página de login, continuando...')
+            // Verificar duplicados de todas formas
+            const pagesCheck = await browser.pages()
+            for (const p of pagesCheck) {
+              if (p !== interactivePage && !p.isClosed()) {
+                try {
+                  const url = p.url()
+                  if (url.includes('upwork.com/ab/account-security/login')) {
+                    console.log('  ⚠️ Detectada página duplicada. Cerrando...')
+                    await p.close()
+                    await new Promise(resolve => setTimeout(resolve, 300))
+                  }
+                } catch (e) {
+                  // Continuar
+                }
+              }
             }
           }
           
@@ -1504,7 +5089,7 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
               const cookies = await interactivePage.cookies()
               const userAgent = await interactivePage.evaluate(() => navigator.userAgent)
               
-              await interactiveBrowser.close()
+              // NO cerrar el navegador aquí, se cerrará en el bloque finally
               
               return {
                 cookies,
@@ -1522,7 +5107,7 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
           
           // Si llegamos aquí, el timeout se alcanzó
           console.log('  ⏱️ Tiempo de espera agotado (5 minutos)')
-          await interactiveBrowser.close()
+          // NO cerrar el navegador aquí, se cerrará en el bloque finally
           
           return {
             cookies: [],
@@ -1532,13 +5117,13 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
             errorDetails: 'El usuario no completó el login dentro del tiempo límite (5 minutos)'
           }
         } catch (interactiveError) {
-          await interactiveBrowser.close()
+          // NO cerrar el navegador aquí, solo relanzar el error
           throw interactiveError
         }
       }
       
       // Si no hay captcha o ya estamos en modo interactivo, retornar error normal
-      let error = 'Login falló - URL no cambió después del login'
+      let error: string = 'Login falló - URL no cambió después del login'
       if (hasCaptcha) {
         error = 'Captcha detectado - Upwork tiene protección anti-bot muy fuerte. La aplicación intentará hacer scraping sin autenticación, pero puede tener limitaciones.'
       } else if (errorMessage) {
@@ -1547,36 +5132,56 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
         error = 'Login falló - verifica que las credenciales sean correctas'
       }
       
-      console.log(`  ❌ Login en Upwork falló: ${error}`)
-      console.log(`  → URL final: ${currentUrl}`)
+      console.log(`  Login en Upwork fallo: ${error}`)
+      let finalUrl = ''
+      let cookies: any[] = []
+      try {
+        finalUrl = page.url()
+        cookies = await page.cookies()
+      } catch (pageError) {
+        // Si el browser ya está cerrado, usar valores por defecto
+        finalUrl = 'unknown'
+      }
+      console.log(`  → URL final: ${finalUrl}`)
       if (hasCaptcha) {
-        console.log('  ⚠️ Captcha detectado - la aplicación continuará con otras plataformas')
+        console.log('  Captcha detectado - la aplicacion continuara con otras plataformas')
       }
       
-      // Aún así, intentar obtener cookies por si acaso (puede que el captcha se resolvió después)
-      const cookies = await page.cookies()
+      const errorDetailsText = hasCaptcha 
+        ? `URL final: ${finalUrl}. Nota: continuara con otras plataformas.`
+        : `URL final: ${finalUrl}.`
       
       return {
         cookies: cookies.length > 0 ? cookies : [],
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         isAuthenticated: false,
         error: error,
-        errorDetails: `URL final: ${currentUrl}. ${hasCaptcha ? 'Nota: La aplicación continuará funcionando con otras plataformas (LinkedIn, Freelancer, etc.) que no requieren autenticación o tienen APIs públicas.' : ''}`
+        errorDetails: errorDetailsText
       }
     }
-  } catch (error) {
-    console.error('❌ Error en login de Upwork:', error)
-    const errorMsg = error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } catch (err: any) {
+    console.error('Error en login de Upwork:', err)
+    const errorMsg = err instanceof Error ? err.message : 'Error desconocido'
     return {
       cookies: [],
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       isAuthenticated: false,
-      error: `Excepción: ${errorMsg}`,
-      errorDetails: error instanceof Error ? error.stack : undefined
+      error: `Excepcion: ${errorMsg}`,
+      errorDetails: err instanceof Error ? err.stack : undefined
     }
   } finally {
-    await browser.close()
+    try {
+      if (browser) {
+        await browser.close().catch(() => {})
+      }
+    } catch (closeError) {
+      // Ignorar errores al cerrar
+    }
   }
+  
+  // Este return nunca debería ejecutarse, pero TypeScript lo requiere
+  return null
 }
 
 /**
@@ -1821,16 +5426,16 @@ export async function loginHireline(credentials: PlatformCredentials): Promise<A
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
 
-      const maxAttempts = 6
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // Esperar un momento para que aparezca el campo de password - UN SOLO INTENTO
+      console.log('  → Esperando campo de password...')
+      await new Promise(resolve => setTimeout(resolve, 5000))
+      
         if (await isPasswordFieldVisible()) {
           console.log('  → Campo de password detectado después de continuar')
           return
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000))
       }
 
-      console.log('  ⚠️ El campo de password no apareció después de los intentos de continuar')
+      console.log('  ⚠️ El campo de password no apareció, continuando...')
     }
     
     // Ocultar que es un bot
@@ -1842,11 +5447,14 @@ export async function loginHireline(credentials: PlatformCredentials): Promise<A
     
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    console.log('  → Navegando a página de login de Hireline...')
-    await page.goto('https://hireline.io/login', {
+    const hirelineLoginUrl = 'https://hireline.io/login'
+    console.log('🔐 Iniciando login en Hireline.io...')
+    console.log(`  → Abriendo URL de inicio de sesión: ${hirelineLoginUrl}`)
+    await page.goto(hirelineLoginUrl, {
       waitUntil: 'networkidle2',
       timeout: 30000
     })
+    console.log('  ✅ Página de login de Hireline.io cargada correctamente')
 
     console.log('  → Esperando formulario de login...')
     await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 10000 })
@@ -2391,12 +5999,14 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
     
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    console.log('  → Navegando a página de login de Indeed...')
+    const indeedLoginUrl = 'https://secure.indeed.com/account/login'
+    console.log('🔐 Iniciando login en Indeed...')
+    console.log(`  → Abriendo URL de inicio de sesión: ${indeedLoginUrl}`)
     
     // Usar Promise.race para evitar timeout infinito
     try {
       await Promise.race([
-        page.goto('https://secure.indeed.com/account/login', {
+        page.goto(indeedLoginUrl, {
           waitUntil: 'domcontentloaded',
           timeout: 20000
         }),
@@ -2428,8 +6038,8 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         }
       }
     }
-    
-    // Listener para detectar nuevas páginas/popups
+
+    // Listener para detectar nuevas páginas/popups (MEJORADO)
     let popupPage: any = null
     const popupPages: any[] = []
     let isResolvingCloudflare = false // Bandera para evitar ejecuciones duplicadas
@@ -2440,31 +6050,93 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         popupPage = newPage
         popupPages.push(newPage)
         try {
-          const url = await newPage.url()
-          console.log('  → Nueva página/popup detectado:', url)
+          // Esperar a que el popup cargue
+          await new Promise(resolve => setTimeout(resolve, 3000))
           
-          // Si es la página de auth de Indeed, intentar resolver inmediatamente
-          if (url.includes('/auth') && !isResolvingCloudflare) {
+          const url = await newPage.url()
+          const title = await newPage.title().catch(() => '')
+          console.log(`  → Nueva página/popup detectado: "${title}" - ${url}`)
+          
+          // Verificar si es el popup "Additional Verification Required" de Cloudflare
+          const isCloudflarePopup = title.includes('Additional Verification Required') ||
+                                   title.includes('Just a moment') ||
+                                   title.includes('Checking your browser') ||
+                                   url.includes('/auth') ||
+                                   url.includes('cloudflare') ||
+                                   url.includes('challenge')
+          
+          if (isCloudflarePopup && !isResolvingCloudflare) {
             isResolvingCloudflare = true
-            console.log('  → Popup de auth detectado, esperando a que cargue...')
+            console.log('  🔒 Popup de Cloudflare "Additional Verification Required" detectado, resolviendo...')
+            
+            // Traer el popup al frente
+            await newPage.bringToFront()
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            
             setTimeout(async () => {
               try {
-                await resolveCloudflareChallenge(newPage)
+                console.log('  → Esperando a que el popup de Cloudflare cargue completamente...')
+                await new Promise(resolve => setTimeout(resolve, 10000)) // Esperar más tiempo
+                
+                // Verificar el título nuevamente después de esperar
+                const currentTitle = await newPage.title().catch(() => '')
+                const currentUrl = await newPage.url().catch(() => '')
+                console.log(`  → Título del popup: "${currentTitle}", URL: ${currentUrl}`)
+                
+                // Resolver el challenge en el popup
+                const resolved = await resolveCloudflareChallenge(newPage)
+                if (resolved) {
+                  console.log('  ✅ Checkbox de Cloudflare marcado exitosamente en popup')
+                  // Esperar a que Cloudflare procese
+                  await new Promise(resolve => setTimeout(resolve, 10000))
+                  
+                  // Verificar si el popup se cerró o cambió
+                  try {
+                    const finalUrl = await newPage.url()
+                    const finalTitle = await newPage.title().catch(() => '')
+                    console.log(`  → Estado final del popup: "${finalTitle}" - ${finalUrl}`)
+                  } catch (e) {
+                    console.log('  → Popup cerrado o navegado')
+                  }
+                } else {
+                  console.log('  ⚠️ No se pudo marcar el checkbox automáticamente en el popup')
+                }
               } catch (e) {
-                console.log('  ⚠️ Error al resolver en popup:', e)
+                console.log('  ⚠️ Error al resolver Cloudflare en popup:', e instanceof Error ? e.message : e)
               } finally {
                 isResolvingCloudflare = false
               }
-            }, 8000) // Esperar 8 segundos para que cargue completamente
+            }, 5000) // Esperar 5 segundos adicionales antes de intentar
           }
         } catch (e) {
-          console.log('  → Nueva página/popup detectado (URL no disponible aún)')
+          console.log('  → Nueva página/popup detectado (detalles no disponibles aún)')
+          // Intentar resolver de todas formas después de esperar
+          if (!isResolvingCloudflare) {
+            isResolvingCloudflare = true
+            setTimeout(async () => {
+              try {
+                await new Promise(resolve => setTimeout(resolve, 10000))
+                const title = await newPage.title().catch(() => '')
+                if (title.includes('Additional Verification Required') || title.includes('Just a moment')) {
+                  await newPage.bringToFront()
+                  await resolveCloudflareChallenge(newPage)
+                }
+              } catch (e) {
+                console.log('  ⚠️ Error en intento de resolver popup:', e)
+              } finally {
+                isResolvingCloudflare = false
+              }
+            }, 5000)
+          }
         }
       }
     })
     
     // Verificar si hay protección anti-bot (Cloudflare "Just a moment...")
     await new Promise(resolve => setTimeout(resolve, 3000))
+    
+    // PASO 1: Resolver Cloudflare challenge PRIMERO antes de continuar
+    console.log('🔒 PASO 1: Verificando y resolviendo desafío de Cloudflare...')
     
     // Intentar resolver Cloudflare challenge automáticamente
     const resolveCloudflareChallenge = async (targetPage?: any): Promise<boolean> => {
@@ -2475,21 +6147,22 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         try {
           const url = await currentPage.url()
           console.log(`  → Página actual: ${url}`)
-        } catch (e) {
+          } catch (e) {
           console.log('  → Página actual: URL no disponible')
         }
         
-        // Esperar a que la página cargue completamente
-        await new Promise(resolve => setTimeout(resolve, 3000))
+        // Esperar más tiempo a que Cloudflare cargue completamente (Cloudflare puede tardar)
+        console.log('  → Esperando a que Cloudflare cargue completamente...')
+        await new Promise(resolve => setTimeout(resolve, 8000))
         
-        // Intentar esperar a que aparezca el checkbox usando waitForSelector
+        // Intentar esperar a que aparezca el checkbox usando waitForSelector con timeout más largo
         console.log('  → Esperando a que aparezca el checkbox de Cloudflare...')
         let checkboxFound = false
         try {
-          // Esperar hasta 10 segundos a que aparezca el checkbox
+          // Esperar hasta 20 segundos a que aparezca el checkbox (Cloudflare puede tardar)
           await currentPage.waitForSelector('input[type="checkbox"]', { 
             visible: true, 
-            timeout: 10000 
+            timeout: 20000 
           })
           checkboxFound = true
           console.log('  ✅ Checkbox encontrado en la página')
@@ -2497,8 +6170,105 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           console.log('  ⚠️ No se encontró checkbox con waitForSelector, continuando con búsqueda manual...')
         }
         
-        // Esperar un poco más para asegurar que está completamente cargado
-        await new Promise(resolve => setTimeout(resolve, 2000))
+        // Esperar aún más para asegurar que Cloudflare está completamente listo
+        console.log('  → Esperando adicional para que Cloudflare esté listo...')
+        await new Promise(resolve => setTimeout(resolve, 5000))
+        
+        // Buscar específicamente el iframe de Cloudflare primero
+        console.log('  → Buscando iframes de Cloudflare específicamente...')
+        const cloudflareFrames = currentPage.frames().filter((frame: any) => {
+          try {
+            const frameUrl = frame.url()?.toLowerCase() || ''
+            const frameName = frame.name()?.toLowerCase() || ''
+            return frameUrl.includes('cloudflare') || 
+                   frameUrl.includes('challenge-platform') ||
+                   frameUrl.includes('cf-') ||
+                   frameName.includes('cf-') ||
+                   frameName.includes('challenge')
+          } catch {
+            return false
+          }
+        })
+        
+        if (cloudflareFrames.length > 0) {
+          console.log(`  → Encontrados ${cloudflareFrames.length} iframes de Cloudflare, intentando resolver...`)
+          for (const cfFrame of cloudflareFrames) {
+            try {
+              // Esperar a que el iframe tenga el checkbox
+              await cfFrame.waitForSelector('input[type="checkbox"]', { timeout: 15000 })
+              
+              const checkbox = await cfFrame.$('input[type="checkbox"]')
+              if (checkbox) {
+                console.log('  → Checkbox encontrado en iframe de Cloudflare')
+                
+                // Hacer scroll si es posible
+                await cfFrame.evaluate(() => {
+                  const cb = document.querySelector('input[type="checkbox"]')
+                  if (cb) {
+                    cb.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                })
+                
+                await new Promise(resolve => setTimeout(resolve, 2000))
+                
+                // Intentar marcar con múltiples métodos
+                try {
+                  await checkbox.click({ delay: 500 })
+                  console.log('  → Clic realizado en checkbox de iframe Cloudflare')
+            } catch (e) {
+                  console.log('  → Puppeteer click falló en iframe, intentando evaluate...')
+                }
+                
+                // También intentar con evaluate dentro del iframe
+                const marked = await cfFrame.evaluate(() => {
+                  const cb = document.querySelector('input[type="checkbox"]') as HTMLInputElement
+                  if (cb) {
+                    cb.focus()
+                    cb.checked = true
+                    
+                    // Disparar eventos en secuencia
+                    const events = [
+                      new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, buttons: 1 }),
+                      new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, buttons: 0 }),
+                      new MouseEvent('click', { bubbles: true, cancelable: true, view: window, buttons: 0 }),
+                      new Event('change', { bubbles: true }),
+                      new Event('input', { bubbles: true })
+                    ]
+                    
+                    events.forEach(event => {
+                      try {
+                        cb.dispatchEvent(event)
+                      } catch (e) {
+                        // Ignorar errores
+                      }
+                    })
+                    
+                    return cb.checked
+                  }
+                  return false
+                })
+                
+                if (marked) {
+                  console.log('  ✅ Checkbox de Cloudflare en iframe marcado exitosamente')
+                  await new Promise(resolve => setTimeout(resolve, 8000)) // Esperar a que Cloudflare procese
+                  
+                  // Verificar que se mantuvo marcado
+                  const verified = await cfFrame.evaluate(() => {
+                    const cb = document.querySelector('input[type="checkbox"]') as HTMLInputElement
+                    return cb ? cb.checked : false
+                  })
+                  
+                  if (verified) {
+                    console.log('  ✅ Verificación exitosa: checkbox de Cloudflare está marcado')
+                    return true
+                  }
+                }
+              }
+            } catch (frameError) {
+              console.log(`  ⚠️ Error procesando iframe de Cloudflare: ${frameError instanceof Error ? frameError.message : frameError}`)
+            }
+          }
+        }
         
         // Método ULTRA-PRIORITARIO: Buscar checkbox específicamente en página /auth usando Puppeteer directamente
         const currentUrl = await currentPage.url()
@@ -2616,20 +6386,20 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
                     if (verified) {
                       console.log('  ✅ Verificación exitosa: checkbox está marcado')
                       return true
-                    } else {
+          } else {
                       console.log('  ⚠️ Checkbox no se mantuvo marcado, reintentando...')
-                    }
-                  }
+          }
+          }
                 } catch (checkboxError) {
                   console.log(`    → Error al procesar checkbox ${i + 1}:`, checkboxError instanceof Error ? checkboxError.message : checkboxError)
                   continue
-                }
-              }
+        }
+      }
             } catch (error) {
               console.log(`  ⚠️ Error en intento ${ultraAttempt + 1}:`, error instanceof Error ? error.message : error)
             }
-            
-            await new Promise(resolve => setTimeout(resolve, 3000))
+    
+    await new Promise(resolve => setTimeout(resolve, 3000))
           }
         }
         
@@ -2752,7 +6522,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
                     // Focus primero
                     try {
                       el.focus()
-                    } catch (e) {
+        } catch (e) {
                       // Ignorar
                     }
                     
@@ -2791,7 +6561,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
                       if (label) {
                         (label as HTMLElement).click()
                       }
-                    } catch (e) {
+              } catch (e) {
                       // Ignorar
                     }
                     
@@ -2815,12 +6585,12 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
                     console.log('  ✅ Verificación exitosa: checkbox está marcado')
                     await new Promise(resolve => setTimeout(resolve, 5000))
                     return true
-                  } else {
+            } else {
                     console.log('  ⚠️ Checkbox no se mantuvo marcado, reintentando...')
                     await new Promise(resolve => setTimeout(resolve, 2000))
                     continue
-                  }
-                } else {
+            }
+          } else {
                   console.log('  ⚠️ No se pudo marcar el checkbox, reintentando...')
                   await new Promise(resolve => setTimeout(resolve, 2000))
                   continue
@@ -2839,70 +6609,103 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           }
         }
         
-        // Método 0: Buscar específicamente el texto "Verify you are human" y su checkbox asociado
+        // Método 0: Buscar específicamente el texto "Verify you are human" y su checkbox asociado (MEJORADO)
+        console.log('  → Buscando específicamente checkbox "Verify you are human"...')
         const verifyHumanCheckbox = await currentPage.evaluate(() => {
-          const keywords = ['verify you are human', 'verify', 'human', 'not a robot', 'i\'m not a robot']
+          const keywords = ['verify you are human', 'verify', 'human', 'not a robot', 'i\'m not a robot', 'i am not a robot']
           const allElements = Array.from(document.querySelectorAll('*'))
           
-          // Buscar el texto "Verify you are human"
-          for (const element of allElements) {
-            const text = (element.textContent || '').toLowerCase().trim()
-            if (keywords.some(keyword => text.includes(keyword))) {
-              // Buscar checkbox cercano
-              let checkbox: HTMLInputElement | null = null
+          // Primero buscar todos los checkboxes visibles
+          const allCheckboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'))
+          console.log(`    → Encontrados ${allCheckboxes.length} checkboxes en total`)
+          
+          for (const checkbox of allCheckboxes) {
+            const cb = checkbox as HTMLInputElement
+            const el = cb as HTMLElement
+            
+            // Verificar visibilidad
+            const style = window.getComputedStyle(el)
+            const isVisible = el.offsetParent !== null && 
+                            style.visibility !== 'hidden' && 
+                            style.display !== 'none' &&
+                            style.opacity !== '0'
+            
+            if (!isVisible || cb.checked) continue
+            
+            // Buscar texto "Verify you are human" cerca del checkbox
+            let nearbyText = ''
+            
+            // Texto del label asociado
+            const label = el.closest('label') || (cb.id ? document.querySelector(`label[for="${cb.id}"]`) : null)
+            if (label) nearbyText += (label.textContent || '').toLowerCase() + ' '
+            
+            // Texto del padre
+            const parent = el.parentElement
+            if (parent) nearbyText += (parent.textContent || '').toLowerCase() + ' '
+            
+            // Texto de siblings
+            if (parent) {
+              Array.from(parent.children).forEach(sibling => {
+                if (sibling !== el) nearbyText += (sibling.textContent || '').toLowerCase() + ' '
+              })
+            }
+            
+            // Texto cercano en el documento
+            const bodyText = document.body.textContent?.toLowerCase() || ''
+            const checkboxIndex = bodyText.indexOf('verify')
+            const checkboxIndex2 = bodyText.indexOf('human')
+            if (checkboxIndex >= 0 && checkboxIndex2 >= 0 && Math.abs(checkboxIndex - checkboxIndex2) < 50) {
+              nearbyText += 'verify you are human '
+            }
+            
+            // Verificar si alguna keyword está cerca
+            if (keywords.some(keyword => nearbyText.includes(keyword))) {
+              console.log(`    → Checkbox encontrado cerca de texto "Verify you are human"`)
+              el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
               
-              // Buscar en el mismo elemento o padre
-              const parent = element.parentElement
-              if (parent) {
-                checkbox = parent.querySelector('input[type="checkbox"]') as HTMLInputElement
-              }
-              
-              // Si no está en el padre, buscar en el mismo elemento
-              if (!checkbox && element instanceof HTMLElement) {
-                checkbox = element.querySelector('input[type="checkbox"]') as HTMLInputElement
-              }
-              
-              // Si no está, buscar en siblings
-              if (!checkbox && element.parentElement) {
-                const siblings = Array.from(element.parentElement.children)
-                for (const sibling of siblings) {
-                  checkbox = sibling.querySelector('input[type="checkbox"]') as HTMLInputElement
-                  if (checkbox) break
+              // Hacer clic con múltiples métodos
+              setTimeout(() => {
+                // Método 1: Click nativo
+                try {
+                  el.click()
+                } catch (e) {}
+                
+                // Método 2: Marcar directamente
+                if (cb) {
+                  cb.checked = true
                 }
-              }
-              
-              // Si encontramos un checkbox, hacer clic
-              if (checkbox) {
-                const el = checkbox as HTMLElement
-                const style = window.getComputedStyle(el)
-                if (el.offsetParent !== null && 
-                    style.visibility !== 'hidden' && 
-                    style.display !== 'none' &&
-                    style.opacity !== '0') {
-                  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                  setTimeout(() => {
-                    el.click()
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-                    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
-                    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
-                    // También intentar cambiar el checked directamente
-                    if (el instanceof HTMLInputElement) {
-                      el.checked = true
-                    }
-                  }, 200)
-                  return true
+                
+                // Método 3: Disparar eventos
+                try {
+                  el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }))
+                  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }))
+                  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, buttons: 1 }))
+                  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, buttons: 0 }))
+                  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, buttons: 0 }))
+                  el.dispatchEvent(new Event('change', { bubbles: true }))
+                  el.dispatchEvent(new Event('input', { bubbles: true }))
+                } catch (e) {}
+                
+                // Método 4: Click en label si existe
+                if (label) {
+                  try {
+                    label.click()
+                  } catch (e) {}
                 }
-              }
+              }, 500)
+              
+              return true
             }
           }
+          
           return false
         })
         
         if (verifyHumanCheckbox) {
           console.log('  ✅ Checkbox "Verify you are human" encontrado y marcado')
-          await new Promise(resolve => setTimeout(resolve, 3000))
+          await new Promise(resolve => setTimeout(resolve, 5000))
           
-          // Verificar que se marcó correctamente
+          // Verificar que se marcó correctamente (múltiples verificaciones)
           const isChecked = await currentPage.evaluate(() => {
             const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'))
             return checkboxes.some(cb => (cb as HTMLInputElement).checked)
@@ -2910,12 +6713,15 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           
           if (isChecked) {
             console.log('  ✅ Checkbox confirmado como marcado')
-            await new Promise(resolve => setTimeout(resolve, 5000))
+            await new Promise(resolve => setTimeout(resolve, 10000)) // Esperar más para que Cloudflare procese
             return true
+          } else {
+            console.log('  ⚠️ Checkbox no se mantuvo marcado, reintentando...')
           }
         }
         
-        // Método 1: Buscar checkbox con múltiples selectores mejorados
+        // Método 1: Buscar checkbox de Cloudflare con selectores MÁS ESPECÍFICOS
+        console.log('  → Buscando checkbox de Cloudflare con selectores específicos...')
         const checkboxSelectors = [
           'input[type="checkbox"][name*="cf"]',
           'input[type="checkbox"][id*="cf"]',
@@ -2924,89 +6730,178 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           '[data-ray] input[type="checkbox"]',
           '.cf-browser-verification input[type="checkbox"]',
           '#challenge-form input[type="checkbox"]',
-          'label:has-text("Verify") input[type="checkbox"]',
-          'label:has-text("human") input[type="checkbox"]',
+          '[id*="cf-chl-widget"] input[type="checkbox"]',
+          '[class*="cf-challenge"] input[type="checkbox"]',
+          '[class*="challenge-form"] input[type="checkbox"]',
+          'input[type="checkbox"][aria-label*="human" i]',
+          'input[type="checkbox"][aria-label*="robot" i]',
           'input[type="checkbox"]'
         ]
         
         for (const selector of checkboxSelectors) {
           try {
-            const checkbox = await currentPage.$(selector)
-            if (checkbox) {
-              const isVisible = await currentPage.evaluate((el: any) => {
-                if (!(el instanceof HTMLElement)) return false
-                const style = window.getComputedStyle(el)
-                return el.offsetParent !== null && 
-                       style.visibility !== 'hidden' && 
-                       style.display !== 'none' &&
-                       style.opacity !== '0'
-              }, checkbox)
-              
-              if (isVisible) {
-                console.log(`  → Checkbox encontrado con selector: ${selector}`)
-                // Hacer scroll al elemento
-                await currentPage.evaluate((el: any) => {
-                  if (el instanceof HTMLElement) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                  }
-                }, checkbox)
-                await new Promise(resolve => setTimeout(resolve, 1000))
-                
-                // Intentar hacer clic múltiples veces con diferentes métodos
-                try {
-                  // Método 1: Puppeteer click
-                  await checkbox.click({ delay: 300 })
-                  console.log('  → Checkbox clickeado con Puppeteer')
-                  await new Promise(resolve => setTimeout(resolve, 1000))
-                } catch (clickError) {
-                  console.log('  → Puppeteer click falló, intentando con evaluate...')
-                }
-                
-                // Método 2: Evaluate click (siempre intentar)
-                try {
-                  await currentPage.evaluate((el: any) => {
-                    if (el instanceof HTMLElement) {
-                      el.click()
-                      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-                      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
-                      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
-                      if (el instanceof HTMLInputElement) {
-                        el.checked = true
-                      }
-                    }
-                  }, checkbox)
-                  console.log('  → Checkbox clickeado con evaluate')
-                } catch (evaluateError) {
-                  console.log('  → Evaluate click falló')
-                }
-                
-                // Verificar que se marcó
-                await new Promise(resolve => setTimeout(resolve, 3000))
-                const wasChecked = await currentPage.evaluate((el: any) => {
-                  return el instanceof HTMLInputElement && el.checked
+            // Buscar TODOS los checkboxes que coincidan con el selector
+            const allCheckboxes = await currentPage.$$(selector)
+            console.log(`    → Selector "${selector}": ${allCheckboxes.length} checkboxes encontrados`)
+            
+            for (const checkbox of allCheckboxes) {
+              try {
+                const isVisible = await currentPage.evaluate((el: any) => {
+                  if (!(el instanceof HTMLElement)) return false
+                  const style = window.getComputedStyle(el)
+                  const rect = el.getBoundingClientRect()
+                  return el.offsetParent !== null && 
+                         style.visibility !== 'hidden' && 
+                         style.display !== 'none' &&
+                         style.opacity !== '0' &&
+                         rect.width > 0 &&
+                         rect.height > 0
                 }, checkbox)
                 
-                if (wasChecked) {
-                  console.log('  ✅ Checkbox marcado exitosamente')
+                if (!isVisible) {
+                  continue
+                }
+                
+                // Verificar si ya está marcado
+                const isAlreadyChecked = await currentPage.evaluate((el: any) => {
+              return el instanceof HTMLInputElement && el.checked
+                }, checkbox)
+                
+                if (isAlreadyChecked) {
+                  console.log(`    → Checkbox ya está marcado, verificando...`)
                   await new Promise(resolve => setTimeout(resolve, 5000))
                   return true
-                } else {
-                  // Intentar marcar directamente
-                  console.log('  → Checkbox no estaba marcado, marcando directamente...')
+                }
+                
+                console.log(`    → Checkbox visible encontrado con selector: ${selector}`)
+                
+                // Hacer scroll al elemento de forma más suave
+                await currentPage.evaluate((el: any) => {
+                  if (el instanceof HTMLElement) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+                  }
+                }, checkbox)
+                await new Promise(resolve => setTimeout(resolve, 2000))
+                
+                // Método 1: Puppeteer click con delay más largo (parece más humano)
+                try {
+                  await checkbox.click({ delay: 600 })
+                  console.log('    → Checkbox clickeado con Puppeteer (delay 600ms)')
+                  await new Promise(resolve => setTimeout(resolve, 2000))
+                } catch (clickError) {
+                  console.log('    → Puppeteer click falló, intentando con evaluate...')
+                }
+                
+                // Método 2: Evaluate click con eventos más completos
+                try {
+                  const clicked = await currentPage.evaluate((el: any) => {
+                    if (!(el instanceof HTMLElement)) return false
+                    
+                    // Focus primero
+                    try {
+                      el.focus()
+                    } catch (e) {}
+                    
+                    // Marcar como checked ANTES de los eventos
+                    if (el instanceof HTMLInputElement) {
+                      el.checked = true
+                    }
+                    
+                    // Crear y disparar eventos en el orden correcto
+                    const events = [
+                      new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }),
+                      new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }),
+                      new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, buttons: 1, detail: 1 }),
+                      new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, buttons: 0, detail: 1 }),
+                      new MouseEvent('click', { bubbles: true, cancelable: true, view: window, buttons: 0, detail: 1 }),
+                      new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window }),
+                      new Event('change', { bubbles: true, cancelable: true }),
+                      new Event('input', { bubbles: true, cancelable: true })
+                    ]
+                    
+                    events.forEach((event, index) => {
+                      try {
+                        setTimeout(() => {
+                          el.dispatchEvent(event)
+                        }, index * 50) // Espaciar eventos ligeramente
+                      } catch (e) {
+                        // Ignorar errores
+                      }
+                    })
+                    
+                    // También hacer click nativo
+                    try {
+                      el.click()
+                    } catch (e) {}
+                    
+                    // Verificar que quedó marcado
+                    if (el instanceof HTMLInputElement) {
+                      return el.checked
+                    }
+                    return false
+                  }, checkbox)
+                  
+                  if (clicked) {
+                    console.log('    → Checkbox clickeado con evaluate (eventos completos)')
+                  }
+                } catch (evaluateError) {
+                  console.log('    → Evaluate click falló:', evaluateError instanceof Error ? evaluateError.message : evaluateError)
+                }
+                
+                // Esperar a que Cloudflare procese el clic
+                await new Promise(resolve => setTimeout(resolve, 5000))
+                
+                // Verificar que se marcó (con múltiples verificaciones)
+                const wasChecked = await currentPage.evaluate((el: any) => {
+                  if (el instanceof HTMLInputElement) {
+                    return el.checked
+                  }
+                  return false
+                }, checkbox)
+                
+                // También verificar si hay algún checkbox marcado en la página
+                const anyChecked = await currentPage.evaluate(() => {
+                  const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'))
+                  return checkboxes.some(cb => (cb as HTMLInputElement).checked)
+                })
+                
+                if (wasChecked || anyChecked) {
+                  console.log('  ✅ Checkbox de Cloudflare marcado exitosamente')
+                  await new Promise(resolve => setTimeout(resolve, 8000)) // Esperar más tiempo para que Cloudflare procese
+                  return true
+                  } else {
+                  console.log('    → Checkbox no se mantuvo marcado, intentando método alternativo...')
+                  // Último intento: marcar directamente y esperar más
                   await currentPage.evaluate((el: any) => {
                     if (el instanceof HTMLInputElement) {
                       el.checked = true
                       el.dispatchEvent(new Event('change', { bubbles: true }))
+                      el.dispatchEvent(new Event('input', { bubbles: true }))
                     }
                   }, checkbox)
-                  console.log('  → Checkbox marcado directamente')
-                  await new Promise(resolve => setTimeout(resolve, 5000))
+                  await new Promise(resolve => setTimeout(resolve, 8000))
+                  
+                  // Verificar una vez más
+                  const finalCheck = await currentPage.evaluate((el: any) => {
+                    if (el instanceof HTMLInputElement) {
+                      return el.checked
+                    }
+                    return false
+                  }, checkbox)
+                  
+                  if (finalCheck) {
+                    console.log('  ✅ Checkbox marcado directamente y verificado')
                   return true
+                  }
                 }
+              } catch (checkboxError) {
+                console.log(`    → Error procesando checkbox: ${checkboxError instanceof Error ? checkboxError.message : checkboxError}`)
+                continue
               }
             }
           } catch (e) {
             // Continuar con el siguiente selector
+            console.log(`    → Error con selector "${selector}": ${e instanceof Error ? e.message : e}`)
           }
         }
         
@@ -3039,13 +6934,13 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
                     el.dispatchEvent(new Event('change', { bubbles: true }))
                   }
                 }, 200)
-                return true
-              }
+                  return true
+                }
             }
           }
-          return false
-        })
-        
+                return false
+              })
+              
         if (checkboxByText) {
           console.log('  ✅ Checkbox encontrado por texto y marcado')
           await new Promise(resolve => setTimeout(resolve, 5000))
@@ -3175,13 +7070,13 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         if (anyCheckbox) {
           console.log('  ✅ Checkbox encontrado (método fallback) y marcado')
           await new Promise(resolve => setTimeout(resolve, 5000))
-          return true
+            return true
         }
         
       } catch (error) {
         console.log('  ⚠️ Error al resolver Cloudflare:', error)
       }
-      return false
+        return false
     }
     
     // Función para verificar y resolver Cloudflare en todas las páginas
@@ -3215,9 +7110,9 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           
           const popupResolved = await resolveCloudflareChallenge(popupPage)
           if (popupResolved) {
-            console.log('  ✅ Cloudflare resuelto en popup')
+          console.log('  ✅ Cloudflare resuelto en popup')
             resolved = true
-            return true
+          return true
           }
         } catch (e) {
           console.log('  ⚠️ Error al verificar popup:', e instanceof Error ? e.message : e)
@@ -3263,7 +7158,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
     if (!isResolvingCloudflare) {
       isResolvingCloudflare = true
       
-      const cloudflareResolved = await checkAndResolveCloudflare()
+    const cloudflareResolved = await checkAndResolveCloudflare()
       if (cloudflareResolved) {
         console.log('  ✅ Desafío de Cloudflare resuelto')
         await new Promise(resolve => setTimeout(resolve, 3000))
@@ -3341,8 +7236,8 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           console.log('  ✅ Cloudflare challenge resuelto')
           // Esperar más tiempo para que Cloudflare procese la verificación
           await new Promise(resolve => setTimeout(resolve, 10000))
-          break
-        }
+              break
+            }
         await new Promise(resolve => setTimeout(resolve, 5000))
       }
       
@@ -3479,7 +7374,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
                 console.log('  → Clic realizado con evaluate')
               }
               
-              await new Promise(resolve => setTimeout(resolve, 5000))
+            await new Promise(resolve => setTimeout(resolve, 5000))
               
               // Esperar navegación a Google
               try {
@@ -3676,42 +7571,62 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
       await new Promise(resolve => setTimeout(resolve, 3000))
     }
 
-    // Verificar que Cloudflare se haya resuelto antes de continuar
+    // PASO 2: Verificar que Cloudflare se haya resuelto COMPLETAMENTE antes de continuar
+    console.log('📧 PASO 2: Verificando que Cloudflare se haya resuelto antes de ingresar email...')
     const currentTitle = await safeGetPageTitle()
     const currentUrl = page.url()
     
     console.log(`  → Verificando estado después de Cloudflare... Título: "${currentTitle}", URL: ${currentUrl}`)
     
-    // Si todavía estamos en Cloudflare, esperar más
-    if (currentTitle.includes('Just a moment') || 
-        currentTitle.includes('Checking your browser') ||
-        currentTitle.includes('Additional Verification Required') ||
-        (currentUrl.includes('/auth') && !currentUrl.includes('/account/login'))) {
-      console.log('  ⚠️ Todavía en página de Cloudflare, esperando más tiempo...')
-      await new Promise(resolve => setTimeout(resolve, 10000))
+    // Verificar si todavía estamos en Cloudflare
+    let stillInCloudflare = currentTitle.includes('Just a moment') || 
+                            currentTitle.includes('Checking your browser') ||
+                            currentTitle.includes('Additional Verification Required') ||
+                            (currentUrl.includes('/auth') && !currentUrl.includes('/account/login'))
+    
+    // Intentar resolver Cloudflare hasta que se complete
+    let cloudflareAttempts = 0
+    const maxCloudflareAttempts = 5
+    
+    while (stillInCloudflare && cloudflareAttempts < maxCloudflareAttempts) {
+      cloudflareAttempts++
+      console.log(`  ⚠️ Todavía en página de Cloudflare (intento ${cloudflareAttempts}/${maxCloudflareAttempts}), intentando resolver...`)
       
-      // Intentar resolver Cloudflare una vez más
+      // Intentar resolver Cloudflare
       const cloudflareResolved2 = await resolveCloudflareChallenge()
       if (cloudflareResolved2) {
-        console.log('  ✅ Desafío de Cloudflare resuelto (segunda verificación)')
+        console.log('  ✅ Checkbox de Cloudflare marcado exitosamente')
+        // Esperar más tiempo para que Cloudflare procese
+        await new Promise(resolve => setTimeout(resolve, 15000))
+      } else {
+        // Esperar un poco más y verificar si se resolvió automáticamente
         await new Promise(resolve => setTimeout(resolve, 10000))
       }
       
-      // Verificar nuevamente
+      // Verificar nuevamente el estado
       const newTitle = await safeGetPageTitle()
       const newUrl = page.url()
       
-      if (newTitle.includes('Just a moment') || 
-          newTitle.includes('Checking your browser') ||
-          (newUrl.includes('/auth') && !newUrl.includes('/account/login'))) {
-        console.log('  ⚠️ Aún en Cloudflare después de esperar, pero continuando...')
-        // Esperar un poco más
-        await new Promise(resolve => setTimeout(resolve, 15000))
+      stillInCloudflare = newTitle.includes('Just a moment') || 
+                         newTitle.includes('Checking your browser') ||
+                         newTitle.includes('Additional Verification Required') ||
+                         (newUrl.includes('/auth') && !newUrl.includes('/account/login'))
+      
+      if (!stillInCloudflare) {
+        console.log('  ✅ Cloudflare resuelto, continuando con el login...')
+        // Esperar un poco más para asegurar que la página está lista
+        await new Promise(resolve => setTimeout(resolve, 5000))
+        break
       }
     }
     
-    // Esperar a que la página cargue completamente
-    console.log('  → Esperando a que la página cargue completamente...')
+    if (stillInCloudflare) {
+      console.log('  ⚠️ Aún en Cloudflare después de múltiples intentos, pero continuando con el proceso...')
+      await new Promise(resolve => setTimeout(resolve, 10000))
+    }
+    
+    // Esperar a que la página cargue completamente después de Cloudflare
+    console.log('  → Esperando a que la página cargue completamente después de Cloudflare...')
     await new Promise(resolve => setTimeout(resolve, 5000))
     
     const captchaSolvedAfterVerification = await attemptAutoCaptcha('post-verification')
@@ -3921,7 +7836,8 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
       })
     }
 
-    // Buscar campo de email con múltiples estrategias
+    // PASO 3: Buscar y llenar campo de email DESPUÉS de resolver Cloudflare
+    console.log('📧 PASO 3: Buscando campo de email para ingresar credenciales del .env...')
     console.log('  → Buscando campo de email...')
     const emailSelectors = [
       'input[type="email"]',
@@ -3937,36 +7853,36 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
     ]
     
     let emailSelector = null
-    for (const selector of emailSelectors) {
-      try {
-        const element = await page.$(selector)
-        if (element) {
+      for (const selector of emailSelectors) {
+        try {
+          const element = await page.$(selector)
+          if (element) {
           const isVisible = await page.evaluate((sel: string) => {
             const el = document.querySelector(sel) as HTMLElement
             return el && el.offsetParent !== null
           }, selector)
-          
-          if (isVisible) {
-            emailSelector = selector
+            
+            if (isVisible) {
+              emailSelector = selector
             console.log(`  → Campo de email encontrado con selector: ${selector}`)
-            break
+              break
+            }
           }
-        }
-      } catch (e) {
+        } catch (e) {
         // Continuar con el siguiente selector
+        }
       }
-    }
-    
+      
     // Fallback más exhaustivo: buscar por tipo o nombre en todos los inputs
-    if (!emailSelector) {
+      if (!emailSelector) {
       const captchaSolvedBeforeFallback = await attemptAutoCaptcha('before-email-fallback')
       if (captchaSolvedBeforeFallback) {
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
       console.log('  → Buscando campo de email con fallback exhaustivo...')
-      const found = await page.evaluate(() => {
-        const inputs = Array.from(document.querySelectorAll('input'))
-        for (const input of inputs) {
+        const found = await page.evaluate(() => {
+          const inputs = Array.from(document.querySelectorAll('input'))
+          for (const input of inputs) {
           const type = (input as HTMLInputElement).type
           const name = (input as HTMLInputElement).name?.toLowerCase() || ''
           const id = (input as HTMLInputElement).id?.toLowerCase() || ''
@@ -3975,11 +7891,11 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           
           // Verificar si es visible
           if ((input as HTMLElement).offsetParent === null) continue
-          
-          if (type === 'email' || 
-              name.includes('email') || 
-              id.includes('email') ||
-              placeholder.includes('email') ||
+            
+            if (type === 'email' || 
+                name.includes('email') || 
+                id.includes('email') ||
+                placeholder.includes('email') ||
               autocomplete === 'email' ||
               autocomplete === 'username') {
             if (input.id) return { selector: `#${input.id}`, type, name, id }
@@ -3989,9 +7905,9 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         }
         return null
       })
-      
-      if (found) {
-        emailSelector = found.selector
+        
+        if (found) {
+          emailSelector = found.selector
         console.log(`  → Campo de email encontrado con fallback: ${emailSelector} (type: ${found.type}, name: ${found.name}, id: ${found.id})`)
       }
     }
@@ -4043,21 +7959,55 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         console.log('  ⚠️ El selector no está visible, pero continuando...')
       }
       
+      // Limpiar y enfocar el campo de email
       await page.focus(emailSelector)
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
       await page.evaluate((selector: string) => {
         const input = document.querySelector(selector) as HTMLInputElement
         if (input) {
           input.value = ''
           input.focus()
+          // Disparar eventos para asegurar que el campo está listo
+          input.dispatchEvent(new Event('focus', { bubbles: true }))
         }
       }, emailSelector)
-      await page.type(emailSelector, credentials.email, { delay: 50 })
-      console.log('  ✅ Email ingresado')
+      
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // Ingresar email con delay más realista
+      console.log(`  → Ingresando email: ${credentials.email}`)
+      await page.type(emailSelector, credentials.email, { delay: 100 })
+      
+      // Verificar que el email se ingresó correctamente
+      const emailEntered = await page.evaluate((selector: string, expectedEmail: string) => {
+        const input = document.querySelector(selector) as HTMLInputElement
+        return input?.value === expectedEmail
+      }, emailSelector, credentials.email)
+      
+      if (emailEntered) {
+        console.log('  ✅ Email ingresado correctamente')
+      } else {
+        console.log('  ⚠️ El email no se ingresó correctamente, reintentando...')
+        // Reintentar ingresando el email directamente
+      await page.evaluate((selector: string, email: string) => {
+        const input = document.querySelector(selector) as HTMLInputElement
+        if (input) {
+          input.value = email
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+          input.dispatchEvent(new Event('change', { bubbles: true }))
+        }
+      }, emailSelector, credentials.email)
+        console.log('  ✅ Email ingresado directamente con evaluate')
+      }
+      
+      // Esperar un poco después de ingresar el email
+      await new Promise(resolve => setTimeout(resolve, 2000))
     } else {
       // Último intento: buscar el primer input de texto visible
       const captchaSolvedBeforeLastAttempt = await attemptAutoCaptcha('before-email-last-attempt')
       if (captchaSolvedBeforeLastAttempt) {
-        await new Promise(resolve => setTimeout(resolve, 1500))
+      await new Promise(resolve => setTimeout(resolve, 1500))
       }
       console.log('  → Último intento: buscando primer input visible...')
       const firstVisibleInput = await page.evaluate(() => {
@@ -4080,15 +8030,15 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         emailSelector = firstVisibleInput
         await page.focus(firstVisibleInput)
         await page.evaluate((selector: string) => {
-          const input = document.querySelector(selector) as HTMLInputElement
-          if (input) {
+        const input = document.querySelector(selector) as HTMLInputElement
+        if (input) {
             input.value = ''
             input.focus()
           }
         }, firstVisibleInput)
         await page.type(firstVisibleInput, credentials.email, { delay: 50 })
         console.log('  ✅ Email ingresado en primer input visible')
-      } else {
+    } else {
         // Error final con información detallada
         const pageTitle = await safeGetPageTitle()
         const pageUrl = page.url()
@@ -4112,13 +8062,13 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
     
     let passwordSelector = null
     for (const selector of passwordSelectors) {
-      const element = await page.$(selector)
-      if (element) {
-        passwordSelector = selector
-        console.log(`  → Campo de password encontrado con selector: ${selector}`)
-        break
-      }
-    }
+        const element = await page.$(selector)
+        if (element) {
+            passwordSelector = selector
+            console.log(`  → Campo de password encontrado con selector: ${selector}`)
+            break
+          }
+        }
     
     if (!passwordSelector) {
       const found = await page.evaluate(() => {
@@ -4165,7 +8115,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
     } else {
       throw new Error('No se encontró el campo de password')
     }
-
+    
     await new Promise(resolve => setTimeout(resolve, 1000))
 
     // Buscar y hacer clic en el botón de login
@@ -4194,10 +8144,10 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
           }, selector)
           
           if (isVisible) {
-            buttonSelector = selector
-            buttonFound = true
-            console.log(`  → Botón de login encontrado con selector: ${selector}`)
-            break
+          buttonSelector = selector
+          buttonFound = true
+          console.log(`  → Botón de login encontrado con selector: ${selector}`)
+          break
           }
         }
       } catch (e) {
@@ -4346,7 +8296,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
         }
       }
       
-      return null
+    return null
     })
     
     const errorMessage = errorInfo?.message || null
@@ -4362,7 +8312,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
       console.log('  ✅ Login exitoso detectado en Indeed')
       const cookies = await page.cookies()
       const userAgent = await page.evaluate(() => navigator.userAgent)
-
+      
       return {
         cookies,
         userAgent,
@@ -4383,15 +8333,15 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
     console.log(`  ❌ Login falló: ${error}`)
     console.log(`  → URL: ${finalUrl}`)
     console.log(`  → Título: ${loginStatus.pageTitle}`)
-    if (errorMessage) {
+      if (errorMessage) {
       console.log(`  → Mensaje de error encontrado: ${errorMessage}`)
     }
-    
-    return {
+
+      return {
       cookies: [],
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      isAuthenticated: false,
-      error: error,
+        isAuthenticated: false,
+        error: error,
       errorDetails: `URL final: ${finalUrl}. Título: ${loginStatus.pageTitle}. ${errorMessage ? `Mensaje: ${errorMessage}` : 'No se encontró mensaje de error específico. Verifica las credenciales.'}`
     }
   } catch (error) {
@@ -4419,94 +8369,432 @@ export async function loginBraintrust(credentials: PlatformCredentials): Promise
   }
 
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: false, // Modo visible para debugging
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+    defaultViewport: { width: 1280, height: 720 }
   })
 
   try {
     const page = await browser.newPage()
+    
+    // Ocultar que es un bot
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      })
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+      })
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      })
+    })
+    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    await page.goto('https://app.usebraintrust.com/login', {
+    const braintrustLoginUrl = 'https://app.usebraintrust.com/auth/login/?next=%2F'
+    console.log('🔐 Iniciando login en Braintrust...')
+    console.log(`  → Abriendo URL de inicio de sesión: ${braintrustLoginUrl}`)
+    await page.goto(braintrustLoginUrl, {
       waitUntil: 'networkidle2',
       timeout: 30000
     })
+    console.log('  ✅ Página de login de Braintrust cargada correctamente')
+    await new Promise(resolve => setTimeout(resolve, 3000))
 
-    await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10000 })
-    await new Promise(resolve => setTimeout(resolve, 1000))
-
-    // Llenar formulario de login de forma más robusta
-    const emailInput = await page.$('input[type="email"], input[name="email"]')
-    if (emailInput) {
-      await emailInput.type(credentials.email, { delay: 50 })
-    } else {
-      throw new Error('No se encontró el campo de email')
-    }
+    // PASO 1: Buscar campo de email de forma robusta
+    console.log('  → Paso 1: Buscando campo de email...')
     
-    const passwordInput = await page.$('input[type="password"], input[name="password"]')
-    if (passwordInput) {
-      await passwordInput.type(credentials.password, { delay: 50 })
-    } else {
-      throw new Error('No se encontró el campo de password')
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    // Buscar y hacer clic en el botón de login usando evaluate
-    await page.evaluate(() => {
-      const selectors = ['button[type="submit"]', 'button.login-button', '[data-testid="login-button"]']
-      for (const selector of selectors) {
-        const btn = document.querySelector(selector) as HTMLElement
-        if (btn && btn.offsetParent !== null) {
-          btn.click()
-          return true
+    const emailSelectors = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[id*="email"]',
+      'input[id*="Email"]',
+      'input[autocomplete="email"]',
+      'input[autocomplete="username"]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="Email" i]',
+      'input[placeholder*="correo" i]'
+    ]
+    
+    let emailInput = null
+    let emailSelector = null
+    
+    for (const selector of emailSelectors) {
+      try {
+        const input = await page.$(selector)
+        if (input) {
+          const isVisible = await page.evaluate((el: any) => {
+            return el && el.offsetParent !== null
+          }, input)
+          
+          if (isVisible) {
+            emailInput = input
+            emailSelector = selector
+            console.log(`  → Campo de email encontrado con selector: ${selector}`)
+            break
+          }
         }
+      } catch (e) {
+        continue
       }
-      const buttons = Array.from(document.querySelectorAll('button'))
-      const loginBtn = buttons.find(btn => {
-        const text = btn.textContent?.toLowerCase() || ''
-        return text.includes('log in') || text.includes('sign in')
+    }
+    
+    // Si no se encontró con selectores, buscar manualmente
+    if (!emailInput) {
+      console.log('  → Campo de email no encontrado con selectores, buscando manualmente...')
+      const foundEmail = await page.evaluate(() => {
+        const inputs = Array.from(document.querySelectorAll('input'))
+        for (const input of inputs) {
+          const type = (input as HTMLInputElement).type
+          const name = (input as HTMLInputElement).name?.toLowerCase() || ''
+          const id = (input as HTMLInputElement).id?.toLowerCase() || ''
+          const placeholder = (input as HTMLInputElement).placeholder?.toLowerCase() || ''
+          
+          if ((input as HTMLElement).offsetParent === null) continue
+          
+          if (type === 'email' || 
+              name.includes('email') || name.includes('username') ||
+              id.includes('email') || id.includes('username') ||
+              placeholder.includes('email') || placeholder.includes('correo')) {
+            if (input.id) return `#${input.id}`
+            if (input.name) return `input[name="${input.name}"]`
+            return `input[type="${type}"]`
+          }
+        }
+        return null
       })
-      if (loginBtn) {
-        (loginBtn as HTMLElement).click()
-        return true
+      
+      if (foundEmail) {
+        emailSelector = foundEmail
+        emailInput = await page.$(foundEmail)
+        console.log(`  → Campo de email encontrado manualmente: ${foundEmail}`)
       }
-      return false
-    })
+    }
     
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    if (!emailInput || !emailSelector) {
+      throw new Error('No se encontró el campo de email. Selectores probados: ' + emailSelectors.join(', '))
+    }
     
-    // Esperar un tiempo razonable para que el login se procese
-    await new Promise(resolve => setTimeout(resolve, 5000))
+    // Ingresar email
+    await page.focus(emailSelector)
+    await page.evaluate((selector: string) => {
+      const input = document.querySelector(selector) as HTMLInputElement
+      if (input) {
+        input.value = ''
+        input.focus()
+      }
+    }, emailSelector)
+    await page.type(emailSelector, credentials.email, { delay: 100 })
+    console.log('  ✅ Email ingresado')
+    await new Promise(resolve => setTimeout(resolve, 1500))
     
-    // Verificar si la URL cambió
+    // PASO 2: Buscar campo de password de forma robusta
+    console.log('  → Paso 2: Buscando campo de password...')
+    
+    const passwordSelectors = [
+      'input[type="password"]',
+      'input[name="password"]',
+      'input[name="pwd"]',
+      'input[id*="password"]',
+      'input[id*="Password"]',
+      'input[id*="pwd"]',
+      'input[autocomplete="current-password"]',
+      'input[autocomplete="password"]',
+      'input[placeholder*="password" i]',
+      'input[placeholder*="Password" i]',
+      'input[placeholder*="contraseña" i]'
+    ]
+    
+    let passwordInput = null
+    let passwordSelector = null
+    
+    // Buscar con selectores
+    for (const selector of passwordSelectors) {
+      try {
+        const input = await page.$(selector)
+        if (input) {
+          const isVisible = await page.evaluate((el: any) => {
+            return el && el.offsetParent !== null
+          }, input)
+          
+          if (isVisible) {
+            passwordInput = input
+            passwordSelector = selector
+            console.log(`  → Campo de password encontrado con selector: ${selector}`)
+            break
+          }
+        }
+      } catch (e) {
+        continue
+      }
+    }
+    
+    // Si no se encontró, buscar manualmente
+    if (!passwordInput) {
+      console.log('  → Campo de password no encontrado con selectores, buscando manualmente...')
+      const foundPassword = await page.evaluate(() => {
+        const inputs = Array.from(document.querySelectorAll('input'))
+        for (const input of inputs) {
+          const type = (input as HTMLInputElement).type
+          const name = (input as HTMLInputElement).name?.toLowerCase() || ''
+          const id = (input as HTMLInputElement).id?.toLowerCase() || ''
+          const placeholder = (input as HTMLInputElement).placeholder?.toLowerCase() || ''
+          
+          if ((input as HTMLElement).offsetParent === null) continue
+          
+          if (type === 'password' || 
+              name.includes('password') || name.includes('pwd') ||
+              id.includes('password') || id.includes('pwd') ||
+              placeholder.includes('password') || placeholder.includes('contraseña')) {
+            if (input.id) return `#${input.id}`
+            if (input.name) return `input[name="${input.name}"]`
+            return `input[type="${type}"]`
+          }
+        }
+        return null
+      })
+      
+      if (foundPassword) {
+        passwordSelector = foundPassword
+        passwordInput = await page.$(foundPassword)
+        console.log(`  → Campo de password encontrado manualmente: ${foundPassword}`)
+      }
+    }
+    
+    // Si aún no se encontró, esperar un poco más (puede aparecer después del email)
+    if (!passwordInput) {
+      console.log('  ⚠️ Campo de password no encontrado, esperando a que aparezca...')
+      try {
+        await page.waitForSelector('input[type="password"]', { 
+          visible: true, 
+          timeout: 8000 
+        })
+        passwordInput = await page.$('input[type="password"]')
+        passwordSelector = 'input[type="password"]'
+        console.log('  → Campo de password apareció después de esperar')
+      } catch (e) {
+        throw new Error('No se encontró el campo de password. Selectores probados: ' + passwordSelectors.join(', '))
+      }
+    }
+    
+    // Ingresar password
+    await page.focus(passwordSelector!)
+    await page.evaluate((selector: string) => {
+      const input = document.querySelector(selector) as HTMLInputElement
+      if (input) {
+        input.value = ''
+        input.focus()
+      }
+    }, passwordSelector!)
+    await page.type(passwordSelector!, credentials.password, { delay: 100 })
+    console.log('  ✅ Password ingresado')
+    await new Promise(resolve => setTimeout(resolve, 1500))
+
+    // PASO 3: Buscar y hacer clic en el botón de login
+    console.log('  → Paso 3: Buscando botón de login...')
+    
+    const submitButtonSelectors = [
+      'button[type="submit"]',
+      'button.login-button',
+      'button[class*="login"]',
+      'button[class*="submit"]',
+      '[data-testid="login-button"]',
+      '[data-testid="submit"]',
+      'button[id*="login"]',
+      'button[id*="submit"]',
+      'input[type="submit"]'
+    ]
+    
+    let buttonFound = false
+    let buttonSelector = null
+    
+    // Buscar con selectores
+    for (const selector of submitButtonSelectors) {
+      try {
+        const button = await page.$(selector)
+        if (button) {
+          const isVisible = await page.evaluate((el: any) => {
+            return el && el.offsetParent !== null && !el.disabled
+          }, button)
+          
+          if (isVisible) {
+            buttonSelector = selector
+            buttonFound = true
+            console.log(`  → Botón de login encontrado con selector: ${selector}`)
+            break
+          }
+        }
+      } catch (e) {
+        continue
+      }
+    }
+    
+    // Si no se encontró con selectores, buscar por texto
+    if (!buttonFound) {
+      console.log('  → Buscando botón por texto...')
+      const buttonInfo = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'))
+        for (const btn of buttons) {
+          const text = btn.textContent?.toLowerCase() || ''
+          const value = (btn as HTMLInputElement).value?.toLowerCase() || ''
+          if ((text.includes('sign in') || text.includes('log in') || 
+              text.includes('login') || text.includes('signin') ||
+              value.includes('login') || text.includes('entrar')) &&
+              (btn as HTMLElement).offsetParent !== null &&
+              !(btn as HTMLButtonElement).disabled) {
+            if (btn.id) return { selector: `#${btn.id}`, found: true }
+            if (btn.className) {
+              const firstClass = (btn.className as string).split(' ')[0]
+              if (firstClass) return { selector: `button.${firstClass}`, found: true }
+            }
+            return { selector: null, found: true }
+          }
+        }
+        return { selector: null, found: false }
+      })
+      
+      if (buttonInfo.found && buttonInfo.selector) {
+        buttonSelector = buttonInfo.selector
+        buttonFound = true
+        console.log(`  → Botón de login encontrado por texto con selector: ${buttonSelector}`)
+      }
+    }
+    
+    // Hacer clic en el botón si se encontró
+    if (buttonFound && buttonSelector) {
+      try {
+        await page.click(buttonSelector)
+        console.log('  ✅ Click en botón de login realizado')
+      } catch (e) {
+        console.log('  ⚠️ Error al hacer clic con page.click(), intentando con evaluate...')
+        await page.evaluate((sel: string) => {
+          const btn = document.querySelector(sel) as HTMLElement
+          if (btn) {
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            btn.click()
+          }
+        }, buttonSelector)
+      }
+    } else {
+      console.log('  ⚠️ No se encontró botón de login, intentando con Enter...')
+      await page.keyboard.press('Enter')
+    }
+    
+    console.log('  → Esperando respuesta del servidor...')
+    await new Promise(resolve => setTimeout(resolve, 3000))
+    
+    // Esperar navegación o cambio en la página
     try {
       await Promise.race([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }),
-        new Promise(resolve => setTimeout(resolve, 3000))
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+        new Promise(resolve => setTimeout(resolve, 5000))
       ])
+      console.log('  → Navegación detectada')
     } catch (e) {
-      // Continuar de todas formas
+      console.log('  → No se detectó navegación, continuando...')
     }
     
-    await new Promise(resolve => setTimeout(resolve, 2000))
+    // Esperar más tiempo para que cualquier redirección se complete
+    await new Promise(resolve => setTimeout(resolve, 4000))
 
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    const currentUrl = page.url()
-    const pageContent = await page.content()
+    const finalUrl = page.url()
+    console.log(`  → URL actual después del login: ${finalUrl}`)
     
-    const hasCaptcha = pageContent.includes('captcha') || pageContent.includes('recaptcha')
-    const errorMessage = await page.evaluate(() => {
-      const errorEl = document.querySelector('.error, .alert-error, [role="alert"]')
-      return errorEl?.textContent?.trim() || null
+    // Verificar si el login fue exitoso de múltiples formas
+    const loginStatus = await page.evaluate(() => {
+      const url = window.location.href
+      const hasLoginPage = url.includes('/login') || url.includes('/signin')
+      const hasDashboard = url.includes('/dashboard') || url.includes('/profile') || 
+                          url.includes('/jobs') || url.includes('/home') ||
+                          url.includes('/app') || url.includes('/projects')
+      
+      // Buscar elementos que indiquen login exitoso
+      const userMenu = document.querySelector('[data-test="user-menu"], .user-menu, [class*="user"], [class*="profile"]')
+      const logoutButton = document.querySelector('a[href*="logout"], a[href*="signout"], button[class*="logout"]')
+      const dashboardLink = document.querySelector('a[href*="/dashboard"], a[href*="/app"]')
+      
+      return {
+        url,
+        hasLoginPage,
+        hasDashboard,
+        hasUserMenu: userMenu !== null,
+        hasLogoutButton: logoutButton !== null,
+        hasDashboardLink: dashboardLink !== null,
+        pageTitle: document.title
+      }
     })
     
-    const isAuthenticated = !currentUrl.includes('/login')
+    console.log('  → Estado de la página:', loginStatus)
+    
+    const pageContent = await page.content()
+    const hasCaptcha = pageContent.includes('captcha') || pageContent.includes('recaptcha') ||
+                       pageContent.includes('g-recaptcha') || pageContent.includes('hcaptcha')
+    
+    // Buscar mensajes de error de forma más exhaustiva
+    const errorInfo = await page.evaluate(() => {
+      const errorSelectors = [
+        '.error',
+        '.alert-error',
+        '.alert-danger',
+        '[role="alert"]',
+        '.text-red-500',
+        '.text-red-600',
+        '[class*="error"]',
+        '[class*="Error"]',
+        '.invalid-feedback',
+        '.form-error',
+        '[data-error]'
+      ]
+      
+      for (const selector of errorSelectors) {
+        const errorEl = document.querySelector(selector)
+        if (errorEl) {
+          const text = errorEl.textContent?.trim()
+          if (text && text.length > 0 && text.length < 200) {
+            return { message: text, selector }
+          }
+        }
+      }
+      
+      // Buscar cualquier texto que parezca un error
+      const allText = document.body.textContent || ''
+      const errorPatterns = [
+        /invalid.*(email|password|credentials)/i,
+        /incorrect.*(email|password|credentials)/i,
+        /wrong.*(email|password|credentials)/i,
+        /error.*login/i,
+        /login.*failed/i,
+        /credenciales.*incorrectas/i,
+        /email.*no.*válido/i
+      ]
+      
+      for (const pattern of errorPatterns) {
+        const match = allText.match(pattern)
+        if (match) {
+          return { message: match[0], selector: 'pattern_match' }
+        }
+      }
+      
+      return null
+    })
+    
+    const errorMessage = errorInfo?.message || null
+    
+    // Determinar si el login fue exitoso
+    const isAuthenticated = !loginStatus.hasLoginPage && 
+                           (loginStatus.hasDashboard || 
+                            loginStatus.hasUserMenu || 
+                            loginStatus.hasLogoutButton ||
+                            loginStatus.hasDashboardLink ||
+                            finalUrl.includes('/app') ||
+                            finalUrl.includes('/dashboard'))
 
     if (isAuthenticated) {
       const cookies = await page.cookies()
       const userAgent = await page.evaluate(() => navigator.userAgent)
 
+      console.log('  ✅ Login exitoso en Braintrust')
       return {
         cookies,
         userAgent,
@@ -4514,26 +8802,31 @@ export async function loginBraintrust(credentials: PlatformCredentials): Promise
       }
     }
 
-    let error = 'Login falló - URL no cambió después del login'
+    let error = 'Login falló - No se detectó autenticación exitosa'
     if (hasCaptcha) {
-      error = 'Captcha detectado'
+      error = 'Captcha detectado - Puede requerir intervención manual'
     } else if (errorMessage) {
       error = `Error: ${errorMessage}`
     }
-    
+
+    console.log(`  ❌ Login falló: ${error}`)
     return {
       cookies: [],
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       isAuthenticated: false,
       error: error,
-      errorDetails: `URL final: ${currentUrl}`
+      errorDetails: `URL final: ${finalUrl}. Estado: ${JSON.stringify(loginStatus)}`
     }
   } catch (error) {
     console.error('❌ Error en login de Braintrust:', error)
-    if (error instanceof Error) {
-      console.error('   Mensaje:', error.message)
+    const errorMsg = error instanceof Error ? error.message : 'Error desconocido'
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: `Excepción: ${errorMsg}`,
+      errorDetails: error instanceof Error ? error.stack : undefined
     }
-    return null
   } finally {
     await browser.close()
   }
@@ -4549,76 +8842,614 @@ export async function loginGlassdoor(credentials: PlatformCredentials): Promise<
   }
 
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: false, // Modo visible para debugging
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+    defaultViewport: { width: 1280, height: 720 }
   })
 
   try {
     const page = await browser.newPage()
+    
+    // Ocultar que es un bot
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      })
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+      })
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      })
+    })
+    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    await page.goto('https://www.glassdoor.com/profile/login_input.htm', {
+    const glassdoorLoginUrl = 'https://www.glassdoor.com/profile/login_input.htm'
+    console.log('🔐 Iniciando login en Glassdoor...')
+    console.log(`  → Abriendo URL de inicio de sesión: ${glassdoorLoginUrl}`)
+    await page.goto(glassdoorLoginUrl, {
       waitUntil: 'networkidle2',
       timeout: 30000
     })
+    console.log('  ✅ Página de login de Glassdoor cargada correctamente')
+    await new Promise(resolve => setTimeout(resolve, 3000))
 
-    await page.waitForSelector('input[type="email"], input[name="username"]', { timeout: 10000 })
-    await new Promise(resolve => setTimeout(resolve, 1000))
-
-    // Llenar formulario de login de forma más robusta
-    const emailInput = await page.$('input[type="email"], input[name="username"]')
-    if (emailInput) {
-      await emailInput.type(credentials.email, { delay: 50 })
-    } else {
-      throw new Error('No se encontró el campo de email/username')
+    // PASO 1: Buscar y hacer clic en botón "Continue with Google" PRIMERO
+    console.log('  → Paso 1: Buscando botón "Continue with Google"...')
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    const googleButtonSelectors = [
+      'button[data-testid*="google"]',
+      'button[aria-label*="Google"]',
+      'a[href*="google"]',
+      '[class*="google"] button',
+      '[id*="google"] button',
+      'button[class*="google-signin"]',
+      'button[class*="google"]',
+      'div[class*="google"] button'
+    ]
+    
+    let googleBtnClicked = false
+    let googleButtonSelector = null
+    
+    for (const selector of googleButtonSelectors) {
+      try {
+        const button = await page.$(selector)
+        if (button) {
+          const isVisible = await page.evaluate((el: any) => {
+            return el && el.offsetParent !== null && !el.disabled
+          }, button)
+          
+          if (isVisible) {
+            const buttonText = await page.evaluate((el: any) => el.textContent?.toLowerCase() || '', button)
+            if (buttonText.includes('google') || buttonText.includes('continue') || 
+                buttonText.includes('iniciar') || buttonText.includes('sign in')) {
+              googleButtonSelector = selector
+              googleBtnClicked = true
+              console.log(`  → Botón de Google encontrado con selector: ${selector}`)
+              break
+            }
+          }
+        }
+      } catch (e) {
+        continue
+      }
     }
     
-    const passwordInput = await page.$('input[type="password"], input[name="password"]')
-    if (passwordInput) {
-      await passwordInput.type(credentials.password, { delay: 50 })
-    } else {
-      throw new Error('No se encontró el campo de password')
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    // Buscar y hacer clic en el botón de login de forma más robusta
-    const submitButton = await page.$('button[type="submit"], button.login-button')
-    if (submitButton) {
-      await page.waitForFunction(
-        (selector: string) => {
-          const btn = document.querySelector(selector)
-          return btn && (btn as HTMLElement).offsetParent !== null
-        },
-        { timeout: 5000 },
-        'button[type="submit"], button.login-button'
-      )
-      await submitButton.click()
-    } else {
-      await page.evaluate(() => {
-        const btn = document.querySelector('button[type="submit"], button.login-button') as HTMLElement
-        if (btn) btn.click()
+    // Si no se encontró con selectores, buscar por texto
+    if (!googleBtnClicked) {
+      console.log('  → Buscando botón de Google por texto...')
+      const buttonInfo = await page.evaluate(() => {
+        const allButtons = Array.from(document.querySelectorAll('button, a, div[role="button"]'))
+        for (const btn of allButtons) {
+          const text = (btn.textContent || '').toLowerCase().trim()
+          if ((text.includes('google') || text.includes('continue with') || text.includes('iniciar')) && 
+              (text.includes('sign') || text.includes('login') || text.includes('continue') || text.includes('sesión')) &&
+              (btn as HTMLElement).offsetParent !== null &&
+              !(btn as HTMLButtonElement).disabled) {
+            if (btn.id) return { selector: `#${btn.id}`, found: true }
+            if (btn.className) {
+              const firstClass = (btn.className as string).split(' ')[0]
+              if (firstClass) return { selector: `button.${firstClass}`, found: true }
+            }
+            return { selector: null, found: true }
+          }
+        }
+        return { selector: null, found: false }
       })
+      
+      if (buttonInfo.found && buttonInfo.selector) {
+        googleButtonSelector = buttonInfo.selector
+        googleBtnClicked = true
+        console.log(`  → Botón de Google encontrado por texto: ${googleButtonSelector}`)
+      }
     }
     
-    // Esperar navegación con timeout más corto
+    if (!googleBtnClicked || !googleButtonSelector) {
+      throw new Error('No se encontró el botón "Sign in with Google" o "Iniciar sesión con Google"')
+    }
+    
+    // Hacer clic en el botón de Google
+    try {
+      await page.click(googleButtonSelector)
+      console.log('  ✅ Click en botón "Sign in with Google" realizado')
+    } catch (e) {
+      console.log('  ⚠️ Error al hacer clic, intentando con evaluate...')
+      await page.evaluate((sel: string) => {
+        const btn = document.querySelector(sel) as HTMLElement
+        if (btn) {
+          btn.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          btn.click()
+        }
+      }, googleButtonSelector)
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    // PASO 1.1: Detectar popup de Google OAuth
+    console.log('  → Paso 1.1: Detectando popup de Google OAuth...')
+    let googlePage = page
+    let popupOpened = false
+    
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const pages = await browser.pages()
+      if (pages.length > 1) {
+        for (const p of pages) {
+          if (p !== page && !p.isClosed()) {
+            try {
+              const popupUrl = p.url()
+              if (popupUrl.includes('accounts.google.com') || 
+                  popupUrl.includes('google.com/oauth') ||
+                  popupUrl.includes('signinwithgoogle') ||
+                  popupUrl === 'about:blank') {
+                googlePage = p
+                popupOpened = true
+                console.log('  ✅ Popup de Google OAuth detectado')
+                await googlePage.bringToFront()
+                await new Promise(resolve => setTimeout(resolve, 3000))
+                break
+              }
+    } catch (e) {
+              continue
+            }
+          }
+        }
+        if (popupOpened) break
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    }
+    
+    if (!popupOpened) {
+      throw new Error('No se pudo detectar el popup de Google OAuth después de hacer click en "Continue with Google"')
+    }
+    
+    // PASO 2: Completar login en el popup de Google (ingresar email primero)
+    console.log('  → Paso 2: Completando login en popup de Google...')
+    
+    // Ingresar email en el popup de Google (PRIMERA VEZ - después del click)
+    console.log('  → Buscando campo de email en popup de Google...')
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    // Esperar a que el popup de Google cargue completamente
+    try {
+      await googlePage.waitForSelector('input[type="email"], input[name="identifier"], input[id="identifierId"], input[autocomplete="username"]', {
+        timeout: 20000,
+        visible: true
+      })
+      console.log('  → Campo de email detectado después de esperar')
+      await new Promise(resolve => setTimeout(resolve, 2000))
+    } catch (e) {
+      console.log('  ⚠️ No se encontró campo de email con waitForSelector, buscando manualmente...')
+      await new Promise(resolve => setTimeout(resolve, 3000))
+    }
+    
+    const googleEmailSelectors = [
+      'input[type="email"]',
+      'input[name="identifier"]',
+      'input[id="identifierId"]',
+      'input[autocomplete="username"]',
+      'input[autocomplete="email"]',
+      'input[type="text"][name*="email"]',
+      'input[type="text"][name*="identifier"]',
+      'input[type="text"][id*="identifier"]',
+      'input[type="text"][id*="email"]'
+    ]
+    
+    let googleEmailSelector = null
+    for (const selector of googleEmailSelectors) {
+      try {
+        const input = await googlePage.$(selector)
+        if (input) {
+          const isVisible = await googlePage.evaluate((el: any) => {
+            return el && el.offsetParent !== null
+          }, input)
+          
+          if (isVisible) {
+            googleEmailSelector = selector
+            console.log(`  → Campo de email encontrado en popup: ${selector}`)
+            break
+          }
+        }
+      } catch (e) {
+        continue
+      }
+    }
+    
+    // Si no se encontró con selectores, buscar manualmente todos los inputs
+    if (!googleEmailSelector) {
+      console.log('  → Campo de email no encontrado con selectores, buscando manualmente...')
+      const foundEmail = await googlePage.evaluate(() => {
+        const inputs = Array.from(document.querySelectorAll('input'))
+        for (const input of inputs) {
+          const type = (input as HTMLInputElement).type?.toLowerCase() || ''
+          const name = (input as HTMLInputElement).name?.toLowerCase() || ''
+          const id = (input as HTMLInputElement).id?.toLowerCase() || ''
+          const autocomplete = (input as HTMLInputElement).autocomplete?.toLowerCase() || ''
+          
+          if ((input as HTMLElement).offsetParent === null) continue
+          
+          if (type === 'email' || 
+              name.includes('identifier') || name.includes('email') ||
+              id.includes('identifier') || id.includes('email') ||
+              autocomplete.includes('username') || autocomplete.includes('email')) {
+            if (input.id) return `#${input.id}`
+            if (input.name) return `input[name="${input.name}"]`
+            return `input[type="${type}"]`
+          }
+        }
+    return null
+      })
+      
+      if (foundEmail) {
+        googleEmailSelector = foundEmail
+        console.log(`  → Campo de email encontrado manualmente: ${foundEmail}`)
+      }
+    }
+    
+    // Si aún no se encontró, esperar más tiempo (puede que el popup esté cargando)
+    if (!googleEmailSelector) {
+      console.log('  ⚠️ Campo de email no encontrado, esperando más tiempo...')
+      await new Promise(resolve => setTimeout(resolve, 5000))
+      
+      // Intentar una vez más con waitForSelector
+      try {
+        await googlePage.waitForSelector('input[type="email"]', {
+          timeout: 15000,
+          visible: true
+        })
+        googleEmailSelector = 'input[type="email"]'
+        console.log('  → Campo de email apareció después de esperar más tiempo')
+      } catch (e) {
+        // Última búsqueda exhaustiva
+        const finalSearch = await googlePage.evaluate(() => {
+          const inputs = Array.from(document.querySelectorAll('input'))
+          for (const input of inputs) {
+            if ((input as HTMLElement).offsetParent === null) continue
+            const type = (input as HTMLInputElement).type?.toLowerCase() || ''
+            if (type === 'email' || type === 'text') {
+              if (input.id) return `#${input.id}`
+              if (input.name) return `input[name="${input.name}"]`
+              return `input[type="${type}"]`
+            }
+          }
+          return null
+        })
+        
+        if (finalSearch) {
+          googleEmailSelector = finalSearch
+          console.log(`  → Campo de email encontrado en búsqueda final: ${finalSearch}`)
+        }
+      }
+    }
+    
+    if (!googleEmailSelector) {
+      // Obtener información de debug antes de lanzar el error
+      const debugInfo = await googlePage.evaluate(() => {
+        const inputs = Array.from(document.querySelectorAll('input'))
+        return {
+          inputsCount: inputs.length,
+          inputs: inputs.map(input => ({
+            type: (input as HTMLInputElement).type,
+            name: (input as HTMLInputElement).name,
+            id: (input as HTMLInputElement).id,
+            autocomplete: (input as HTMLInputElement).autocomplete,
+            visible: (input as HTMLElement).offsetParent !== null
+          })),
+          url: window.location.href,
+          title: document.title
+        }
+      })
+      
+      console.log('  ❌ Debug: Información del popup de Google:', JSON.stringify(debugInfo, null, 2))
+      throw new Error(`No se encontró el campo de email en el popup de Google. URL: ${debugInfo.url}, Inputs encontrados: ${debugInfo.inputsCount}`)
+    }
+    
+    // Ingresar email en el popup
+    await googlePage.focus(googleEmailSelector)
+    await googlePage.evaluate((selector: string) => {
+      const input = document.querySelector(selector) as HTMLInputElement
+      if (input) {
+        input.value = ''
+        input.focus()
+      }
+    }, googleEmailSelector)
+    await googlePage.type(googleEmailSelector, credentials.email, { delay: 100 })
+    console.log('  ✅ Email ingresado en popup de Google')
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    
+    // Buscar y hacer clic en botón "Next" o "Siguiente" en el popup de Google
+    console.log('  → Buscando botón "Next" en popup de Google...')
+    const nextButtonInfo = await googlePage.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'))
+      for (const btn of buttons) {
+        const text = (btn.textContent || '').toLowerCase().trim()
+        if ((text === 'next' || text === 'siguiente') && 
+            (btn as HTMLElement).offsetParent !== null &&
+            !(btn as HTMLButtonElement).disabled) {
+          if (btn.id) return { selector: `#${btn.id}`, found: true }
+          return { selector: null, found: true }
+        }
+      }
+      return { selector: null, found: false }
+    })
+    
+    if (nextButtonInfo.found) {
+      try {
+        if (nextButtonInfo.selector) {
+          await googlePage.click(nextButtonInfo.selector)
+    } else {
+          await googlePage.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'))
+            const nextBtn = buttons.find(btn => {
+              const text = (btn.textContent || '').toLowerCase().trim()
+              return (text === 'next' || text === 'siguiente') && 
+                     (btn as HTMLElement).offsetParent !== null &&
+                     !(btn as HTMLButtonElement).disabled
+            })
+            if (nextBtn) (nextBtn as HTMLElement).click()
+          })
+        }
+        console.log('  ✅ Click en botón "Next" realizado')
+      } catch (e) {
+        console.log('  ⚠️ Intentando con Enter...')
+        await googlePage.keyboard.press('Enter')
+      }
+    } else {
+      await googlePage.keyboard.press('Enter')
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 4000))
+    
+    // Ingresar password en el popup de Google
+    console.log('  → Buscando campo de password en popup de Google...')
+    
+    const googlePasswordSelectors = [
+      'input[type="password"]',
+      'input[name="password"]',
+      'input[autocomplete="current-password"]'
+    ]
+    
+    let googlePasswordSelector = null
+    for (const selector of googlePasswordSelectors) {
+      try {
+        const input = await googlePage.$(selector)
+        if (input) {
+          const isVisible = await googlePage.evaluate((el: any) => {
+            return el && el.offsetParent !== null
+          }, input)
+          
+          if (isVisible) {
+            googlePasswordSelector = selector
+            console.log(`  → Campo de password encontrado en popup: ${selector}`)
+            break
+          }
+        }
+      } catch (e) {
+        continue
+      }
+    }
+    
+    // Esperar a que aparezca el campo de password si no se encuentra
+    if (!googlePasswordSelector) {
+      try {
+        await googlePage.waitForSelector('input[type="password"]', { 
+          visible: true, 
+          timeout: 10000 
+        })
+        googlePasswordSelector = 'input[type="password"]'
+        console.log('  → Campo de password apareció después de esperar')
+      } catch (e) {
+        throw new Error('No se encontró el campo de password en el popup de Google')
+      }
+    }
+    
+    // Ingresar password en el popup
+    await googlePage.focus(googlePasswordSelector)
+    await googlePage.evaluate((selector: string) => {
+      const input = document.querySelector(selector) as HTMLInputElement
+      if (input) {
+        input.value = ''
+        input.focus()
+      }
+    }, googlePasswordSelector)
+    await googlePage.type(googlePasswordSelector, credentials.password, { delay: 100 })
+    console.log('  ✅ Password ingresado en popup de Google')
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    
+    // Buscar y hacer clic en botón "Next" o "Siguiente" final
+    console.log('  → Buscando botón "Next" final en popup de Google...')
+    const finalNextButtonInfo = await googlePage.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'))
+      for (const btn of buttons) {
+        const text = (btn.textContent || '').toLowerCase().trim()
+        if ((text === 'next' || text === 'siguiente') && 
+            (btn as HTMLElement).offsetParent !== null &&
+            !(btn as HTMLButtonElement).disabled) {
+          if (btn.id) return { selector: `#${btn.id}`, found: true }
+          return { selector: null, found: true }
+        }
+      }
+      return { selector: null, found: false }
+    })
+    
+    if (finalNextButtonInfo.found) {
+      try {
+        if (finalNextButtonInfo.selector) {
+          await googlePage.click(finalNextButtonInfo.selector)
+    } else {
+          await googlePage.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'))
+            const nextBtn = buttons.find(btn => {
+              const text = (btn.textContent || '').toLowerCase().trim()
+              return (text === 'next' || text === 'siguiente') && 
+                     (btn as HTMLElement).offsetParent !== null &&
+                     !(btn as HTMLButtonElement).disabled
+            })
+            if (nextBtn) (nextBtn as HTMLElement).click()
+          })
+        }
+        console.log('  ✅ Click en botón "Next" final realizado')
+      } catch (e) {
+        await googlePage.keyboard.press('Enter')
+      }
+    } else {
+      await googlePage.keyboard.press('Enter')
+    }
+    
+    console.log('  → Esperando a que se complete el login...')
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    // Esperar a que el popup se cierre o redirija a Glassdoor
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const pages = await browser.pages()
+      if (googlePage.isClosed()) {
+        console.log('  ✅ Popup de Google cerrado, login completado')
+        break
+      }
+      
+      const currentPopupUrl = googlePage.url()
+      if (!currentPopupUrl.includes('accounts.google.com')) {
+        console.log('  ✅ Popup redirigido, login completado')
+        break
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 2000))
+    }
+    
+    // Volver a la página principal de Glassdoor
+    await page.bringToFront()
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    // PASO 3: Verificar login exitoso
+    console.log('  → Paso 3: Verificando login exitoso...')
+    
+    // Esperar navegación si hay redirección
     try {
       await Promise.race([
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
         new Promise(resolve => setTimeout(resolve, 5000))
       ])
+      console.log('  → Navegación detectada')
     } catch (e) {
-      console.log('⚠️ No se detectó navegación, verificando estado actual...')
+      console.log('  → No se detectó navegación, continuando...')
     }
+    
+    await new Promise(resolve => setTimeout(resolve, 3000))
 
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    const currentUrl = page.url()
-    const isAuthenticated = !currentUrl.includes('/login') && !currentUrl.includes('/profile/login')
+    const finalUrl = page.url()
+    console.log(`  → URL actual después del login: ${finalUrl}`)
+    
+    // Verificar si el login fue exitoso de múltiples formas
+    const loginStatus = await page.evaluate(() => {
+      const url = window.location.href
+      const hasLoginPage = url.includes('/login') || url.includes('/signin')
+      const hasDashboard = url.includes('/dashboard') || url.includes('/jobs') || 
+                          url.includes('/home') || url.includes('/profile') ||
+                          url.includes('/member/home') || url.includes('/member/profile') && !url.includes('/login')
+      
+      // Buscar elementos que indiquen login exitoso
+      const userMenu = document.querySelector('[data-test="user-menu"], .user-menu, [class*="user"], [class*="profile"]')
+      const logoutButton = document.querySelector('a[href*="logout"], a[href*="signout"], button[class*="logout"]')
+      const jobsLink = document.querySelector('a[href*="/jobs"], a[href*="/dashboard"]')
+      const userName = document.querySelector('[class*="userName"], [class*="user-name"], [data-test*="user"]')
+      
+      // Verificar si hay elementos que indiquen que estamos logueados
+      const pageText = document.body.textContent || ''
+      const hasLoggedInIndicators = pageText.includes('Sign Out') || 
+                                     pageText.includes('Log Out') ||
+                                     pageText.includes('My Profile') ||
+                                     pageText.includes('Dashboard')
+      
+      return {
+        url,
+        hasLoginPage,
+        hasDashboard,
+        hasUserMenu: userMenu !== null,
+        hasLogoutButton: logoutButton !== null,
+        hasJobsLink: jobsLink !== null,
+        hasUserName: userName !== null,
+        hasLoggedInIndicators,
+        pageTitle: document.title
+      }
+    })
+    
+    console.log('  → Estado de la página:', loginStatus)
+    
+    const pageContent = await page.content()
+    const hasCaptcha = pageContent.includes('captcha') || pageContent.includes('recaptcha') ||
+                       pageContent.includes('g-recaptcha') || pageContent.includes('hcaptcha')
+    
+    // Buscar mensajes de error de forma más exhaustiva
+    const errorInfo = await page.evaluate(() => {
+      const errorSelectors = [
+        '.error',
+        '.alert-error',
+        '.alert-danger',
+        '[role="alert"]',
+        '.text-red-500',
+        '.text-red-600',
+        '[class*="error"]',
+        '[class*="Error"]',
+        '.invalid-feedback',
+        '.form-error',
+        '[data-error]',
+        '.gd-form-error'
+      ]
+      
+      for (const selector of errorSelectors) {
+        const errorEl = document.querySelector(selector)
+        if (errorEl) {
+          const text = errorEl.textContent?.trim()
+          if (text && text.length > 0 && text.length < 200) {
+            return { message: text, selector }
+          }
+        }
+      }
+      
+      // Buscar cualquier texto que parezca un error
+      const allText = document.body.textContent || ''
+      const errorPatterns = [
+        /invalid.*(email|password|credentials)/i,
+        /incorrect.*(email|password|credentials)/i,
+        /wrong.*(email|password|credentials)/i,
+        /error.*login/i,
+        /login.*failed/i,
+        /credenciales.*incorrectas/i,
+        /email.*no.*válido/i
+      ]
+      
+      for (const pattern of errorPatterns) {
+        const match = allText.match(pattern)
+        if (match) {
+          return { message: match[0], selector: 'pattern_match' }
+        }
+      }
+      
+      return null
+    })
+    
+    const errorMessage = errorInfo?.message || null
+    
+    // Determinar si el login fue exitoso - verificar múltiples indicadores
+    const isAuthenticated = (loginStatus.hasUserMenu || 
+                            loginStatus.hasLogoutButton || 
+                            loginStatus.hasJobsLink ||
+                            loginStatus.hasUserName ||
+                            loginStatus.hasLoggedInIndicators ||
+                            loginStatus.hasDashboard) &&
+                           !loginStatus.hasLoginPage ||
+                           (!finalUrl.includes('/login') && 
+                            !finalUrl.includes('/signin') &&
+                            (finalUrl.includes('/member/home') || 
+                             finalUrl.includes('/member/profile') && !finalUrl.includes('/login')))
 
     if (isAuthenticated) {
       const cookies = await page.cookies()
       const userAgent = await page.evaluate(() => navigator.userAgent)
 
+      console.log('  ✅ Login exitoso en Glassdoor')
       return {
         cookies,
         userAgent,
@@ -4626,12 +9457,20 @@ export async function loginGlassdoor(credentials: PlatformCredentials): Promise<
       }
     }
 
+    let error = 'Login falló - No se detectó autenticación exitosa'
+    if (hasCaptcha) {
+      error = 'Captcha detectado - Puede requerir intervención manual'
+    } else if (errorMessage) {
+      error = `Error: ${errorMessage}`
+    }
+
+    console.log(`  ❌ Login falló: ${error}`)
     return {
       cookies: [],
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       isAuthenticated: false,
-      error: 'Login falló - URL no cambió después del login',
-      errorDetails: `URL final: ${currentUrl}`
+      error: error,
+      errorDetails: `URL final: ${finalUrl}. Estado: ${JSON.stringify(loginStatus)}`
     }
   } catch (error) {
     console.error('❌ Error en login de Glassdoor:', error)
@@ -4658,52 +9497,557 @@ export async function loginFreelancer(credentials: PlatformCredentials): Promise
   }
 
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: false, // Modo visible para permitir resolver captcha manualmente si es necesario
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+    defaultViewport: { width: 1280, height: 720 }
   })
 
   try {
     const page = await browser.newPage()
+    
+    // Ocultar que es un bot
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      })
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+      })
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      })
+    })
+    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    await page.goto('https://www.freelancer.com/login', {
+    const freelancerLoginUrl = 'https://www.freelancer.com/login'
+    console.log('🔐 Iniciando login en Freelancer...')
+    console.log(`  → Abriendo URL de inicio de sesión: ${freelancerLoginUrl}`)
+    await page.goto(freelancerLoginUrl, {
       waitUntil: 'networkidle2',
       timeout: 30000
     })
+    console.log('  ✅ Página de login de Freelancer cargada correctamente')
+    await new Promise(resolve => setTimeout(resolve, 3000))
 
-    await page.waitForSelector('input[name="username"], input[type="email"]', { timeout: 10000 })
-    await page.type('input[name="username"], input[type="email"]', credentials.email || credentials.username || '', { delay: 50 })
-    await page.type('input[name="password"], input[type="password"]', credentials.password, { delay: 50 })
-
-    // Hacer clic usando evaluate
-    await page.evaluate(() => {
-      const btn = document.querySelector('button[type="submit"], button.login-button') as HTMLElement
-      if (btn) btn.click()
-    })
+    // Función para resolver reCAPTCHA visual con selección de imágenes
+    const solveVisualRecaptcha = async (): Promise<boolean> => {
+      try {
+        console.log('  → Detectando reCAPTCHA visual...')
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        
+        // Buscar el popup/overlay de reCAPTCHA visual
+        const hasVisualCaptcha = await page.evaluate(() => {
+          // Buscar texto que indique un desafío visual
+          const bodyText = document.body.textContent || ''
+          const challengePatterns = [
+            /select all images with a/i,
+            /select all images with an/i,
+            /select all images containing/i,
+            /selecciona todas las imágenes/i,
+            /verifica que eres humano/i
+          ]
+          
+          return challengePatterns.some(pattern => pattern.test(bodyText))
+        })
+        
+        if (!hasVisualCaptcha) {
+          console.log('  → No se detectó reCAPTCHA visual')
+          return false
+        }
+        
+        console.log('  ✅ reCAPTCHA visual detectado')
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        
+        // Extraer el texto del desafío (qué imágenes buscar)
+        const challengeText = await page.evaluate(() => {
+          // Buscar el texto del desafío en diferentes elementos
+          const selectors = [
+            'h2', 'h3', 'h4', '.rc-imageselect-challenge-text',
+            '[class*="challenge"]', '[class*="instruction"]',
+            'div[role="heading"]', '.rc-imageselect-desc-text'
+          ]
+          
+          for (const selector of selectors) {
+            const elements = document.querySelectorAll(selector)
+            for (const el of Array.from(elements)) {
+              const text = el.textContent || ''
+              if (text.toLowerCase().includes('select all images with') ||
+                  text.toLowerCase().includes('selecciona todas las imágenes')) {
+                return text.trim()
+              }
+            }
+          }
+          
+          // Buscar en todo el body
+          const bodyText = document.body.textContent || ''
+          const match = bodyText.match(/select all images with (?:a|an)?\s*([a-z]+)/i)
+          if (match) {
+            return match[0]
+          }
+          
+          return null
+        })
+        
+        if (!challengeText) {
+          console.log('  ⚠️ No se pudo extraer el texto del desafío')
+          return false
+        }
+        
+        // Extraer la palabra clave del objeto a buscar (ej: "bus", "traffic light", "car")
+        const objectToFind = challengeText.match(/select all images with (?:a|an)?\s*([a-z\s]+)/i)?.[1]?.trim().toLowerCase() || ''
+        console.log(`  → Desafío detectado: "${challengeText}"`)
+        console.log(`  → Objeto a buscar: "${objectToFind}"`)
+        
+        if (!objectToFind) {
+          console.log('  ⚠️ No se pudo identificar el objeto a buscar')
+          return false
+        }
+        
+        // Esperar a que las imágenes carguen completamente
+        console.log('  → Esperando a que las imágenes carguen...')
+        await new Promise(resolve => setTimeout(resolve, 5000))
+        
+        // Buscar y hacer click en las imágenes que contengan el objeto solicitado
+        const imagesSelected = await page.evaluate(async (objectKeyword: string) => {
+          // Buscar todos los elementos clickeables que representan imágenes en el reCAPTCHA
+          // Los reCAPTCHA visuales usan diferentes estructuras, intentar múltiples selectores
+          const imageSelectors = [
+            'td.rc-imageselect-tile',
+            '.rc-imageselect-tile',
+            'div[role="button"][tabindex="0"]',
+            'img[class*="tile"]',
+            '.rc-image-tile-wrapper',
+            'div[class*="tile"]'
+          ]
+          
+          let tiles: HTMLElement[] = []
+          
+          for (const selector of imageSelectors) {
+            const elements = document.querySelectorAll(selector)
+            if (elements.length > 0) {
+              tiles = Array.from(elements) as HTMLElement[]
+              break
+            }
+          }
+          
+          // Si no se encontraron con selectores, buscar cualquier div clickeable en el área del captcha
+          if (tiles.length === 0) {
+            const allDivs = Array.from(document.querySelectorAll('div'))
+            tiles = allDivs.filter(div => {
+              const rect = div.getBoundingClientRect()
+              const style = window.getComputedStyle(div)
+              // Buscar divs que sean clickeables y estén en el área visible del captcha
+              return rect.width > 50 && rect.height > 50 &&
+                     rect.width < 200 && rect.height < 200 &&
+                     style.cursor === 'pointer' &&
+                     div.offsetParent !== null
+            }) as HTMLElement[]
+          }
+          
+          console.log(`Encontrados ${tiles.length} tiles potenciales`)
+          
+          // Para cada tile, verificar si contiene una imagen del objeto solicitado
+          // NOTA: Sin un modelo de visión por computadora, esto es limitado
+          // Intentar usar características básicas de las imágenes
+          let selectedCount = 0
+          
+          for (let i = 0; i < tiles.length; i++) {
+            const tile = tiles[i]
+            
+            // Buscar imagen dentro del tile
+            const img = tile.querySelector('img') as HTMLImageElement | null
+            if (!img || !img.complete) continue
+            
+            // Intentar determinar si la imagen contiene el objeto usando características básicas
+            // Esto es limitado sin ML, pero intentaremos algunos heurísticos
+            
+            // Para "bus": buscar imágenes con colores característicos (amarillo, blanco, azul común en buses)
+            // Para "traffic light": buscar áreas con colores rojos/amarillos/verdes
+            // Para "car": buscar formas rectangulares horizontales
+            
+            let shouldSelect = false
+            
+            // Crear un canvas para analizar la imagen
+            try {
+              const canvas = document.createElement('canvas')
+              const ctx = canvas.getContext('2d')
+              if (!ctx) continue
+              
+              canvas.width = img.naturalWidth || img.width
+              canvas.height = img.naturalHeight || img.height
+              
+              ctx.drawImage(img, 0, 0)
+              
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+              const data = imageData.data
+              
+              // Analizar colores y patrones básicos
+              let yellowCount = 0
+              let redCount = 0
+              let blueCount = 0
+              let greenCount = 0
+              
+              for (let j = 0; j < data.length; j += 16) { // Sample cada 4 píxeles para velocidad
+                const r = data[j]
+                const g = data[j + 1]
+                const b = data[j + 2]
+                
+                // Detectar colores característicos
+                if (r > 200 && g > 150 && b < 100) yellowCount++ // Amarillo (buses escolares)
+                if (r > 150 && g < 100 && b < 100) redCount++ // Rojo (semáforos, buses rojos)
+                if (r < 100 && g < 100 && b > 150) blueCount++ // Azul (buses, autos)
+                if (r < 100 && g > 150 && b < 100) greenCount++ // Verde (semáforos)
+              }
+              
+              const totalPixels = (data.length / 16)
+              const yellowRatio = yellowCount / totalPixels
+              const redRatio = redCount / totalPixels
+              const blueRatio = blueCount / totalPixels
+              const greenRatio = greenCount / totalPixels
+              
+              // Heurísticas básicas basadas en el objeto a buscar
+              if (objectKeyword.includes('bus')) {
+                // Buses suelen tener mucho amarillo (escolares), azul, o rojo/blanco
+                shouldSelect = yellowRatio > 0.15 || blueRatio > 0.2 || (redRatio > 0.1 && (yellowRatio + blueRatio) > 0.1)
+              } else if (objectKeyword.includes('traffic light') || objectKeyword.includes('light')) {
+                // Semáforos tienen colores rojos, amarillos o verdes prominentes
+                shouldSelect = redRatio > 0.1 || greenRatio > 0.1 || yellowRatio > 0.1
+              } else if (objectKeyword.includes('car')) {
+                // Autos pueden tener varios colores, pero suelen tener formas definidas
+                // Usar una heurística más simple: si tiene colores sólidos prominentes
+                shouldSelect = (redRatio + blueRatio + yellowRatio) > 0.15
+              } else {
+                // Para otros objetos, usar una heurística general
+                shouldSelect = (redRatio + blueRatio + yellowRatio + greenRatio) > 0.2
+              }
+              
+            } catch (e) {
+              // Si falla el análisis, continuar con la siguiente imagen
+              continue
+            }
+            
+            // Si determinamos que debe seleccionarse, hacer click
+            if (shouldSelect) {
+              try {
+                tile.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                await new Promise(resolve => setTimeout(resolve, 200))
+                tile.click()
+                selectedCount++
+                console.log(`Tile ${i + 1} seleccionado`)
+                // Pequeña pausa entre clicks
+                await new Promise(resolve => setTimeout(resolve, 300))
+              } catch (e) {
+                console.log(`Error al hacer click en tile ${i + 1}`)
+              }
+            }
+          }
+          
+          console.log(`Total de imágenes seleccionadas: ${selectedCount}`)
+          return selectedCount > 0
+        }, objectToFind)
+        
+        if (!imagesSelected) {
+          console.log('  ⚠️ No se pudieron seleccionar imágenes automáticamente')
+          console.log('  → Esperando intervención manual...')
+          // Esperar a que el usuario lo resuelva manualmente (máximo 2 minutos)
+          let resolved = false
+          for (let i = 0; i < 120; i++) {
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            
+            // Verificar si el captcha fue resuelto (el popup desapareció o cambió)
+            const stillVisible = await page.evaluate(() => {
+              const bodyText = document.body.textContent || ''
+              return bodyText.includes('select all images') || 
+                     bodyText.includes('selecciona todas las imágenes') ||
+                     bodyText.includes('verify you are human')
+            })
+            
+            if (!stillVisible) {
+              resolved = true
+              console.log('  ✅ reCAPTCHA resuelto (manual o automático)')
+              break
+            }
+          }
+          
+          if (!resolved) {
+            console.log('  ⚠️ Tiempo de espera agotado para resolución manual')
+            return false
+          }
+        } else {
+          console.log('  ✅ Imágenes seleccionadas automáticamente')
+          
+          // Esperar a que se procesen las selecciones
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          
+          // Verificar si se necesitan más rondas de selección
+          const needsMoreRounds = await page.evaluate(() => {
+            const bodyText = document.body.textContent || ''
+            return bodyText.includes('select all images') ||
+                   bodyText.includes('select all squares') ||
+                   bodyText.includes('selecciona todas las imágenes')
+          })
+          
+          if (needsMoreRounds) {
+            console.log('  → Se requiere otra ronda de selección, reintentando...')
+            await new Promise(resolve => setTimeout(resolve, 3000))
+            return await solveVisualRecaptcha() // Recursivo para múltiples rondas
+          }
+          
+          // Hacer click en el botón "VERIFY" o "Next"
+          console.log('  → Buscando botón VERIFY...')
+          const verifyClicked = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"], div[role="button"]'))
+            for (const btn of buttons) {
+              const text = (btn.textContent || '').toLowerCase().trim()
+              const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase().trim()
+              
+              if ((text === 'verify' || text === 'verificar' || 
+                   text.includes('verify') || text.includes('next') ||
+                   ariaLabel.includes('verify')) &&
+                  (btn as HTMLElement).offsetParent !== null &&
+                  !(btn as HTMLButtonElement).disabled) {
+                (btn as HTMLElement).click()
+                return true
+              }
+            }
+            return false
+          })
+          
+          if (verifyClicked) {
+            console.log('  ✅ Click en botón VERIFY realizado')
+            await new Promise(resolve => setTimeout(resolve, 3000))
+          } else {
+            console.log('  ⚠️ No se encontró botón VERIFY, esperando a que se resuelva automáticamente...')
+            await new Promise(resolve => setTimeout(resolve, 3000))
+          }
+        }
+        
+        return true
+      } catch (error) {
+        console.log(`  ⚠️ Error al resolver reCAPTCHA visual: ${(error as Error).message}`)
+        return false
+      }
+    }
     
-    // Esperar navegación con timeout más corto
+    // Función para intentar resolver captcha automáticamente
+    const attemptAutoCaptcha = async (context: string = 'general'): Promise<boolean> => {
+      try {
+        console.log(`  → Buscando captcha para resolver automáticamente (${context})...`)
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        
+        // Primero intentar resolver reCAPTCHA visual
+        const visualCaptchaSolved = await solveVisualRecaptcha()
+        if (visualCaptchaSolved) {
+          return true
+        }
+        
+        // Buscar en iframes (reCAPTCHA checkbox, hCaptcha, etc.)
+        const frames = page.frames()
+        for (const frame of frames) {
+          try {
+            const frameUrl = frame.url()?.toLowerCase() || ''
+            if (frameUrl.includes('recaptcha') || frameUrl.includes('hcaptcha') || frameUrl.includes('captcha')) {
+              try {
+                const checkbox = await frame.$('#recaptcha-anchor, .recaptcha-checkbox-border, .recaptcha-checkbox-checkmark, #checkbox, .mark')
+                if (checkbox) {
+                  console.log(`  → Intentando marcar checkbox dentro de iframe (${context})...`)
+                  await checkbox.click({ delay: 100 })
+                  await new Promise(resolve => setTimeout(resolve, 3000))
+                  
+                  // Después de hacer click en checkbox, puede aparecer el visual captcha
+                  await solveVisualRecaptcha()
+                  
+                  console.log('  ✅ Captcha marcado automáticamente dentro del iframe')
+                  return true
+                }
+              } catch (frameError) {
+                // Continuar si hay error
+              }
+            }
+          } catch (e) {
+            // Continuar si hay error
+          }
+        }
+
+        // Buscar checkbox visible en la página principal
+        const checkboxSelectors = [
+          'input[type="checkbox"][name*="robot" i]',
+          '.recaptcha-checkbox',
+          '[class*="recaptcha"] input[type="checkbox"]',
+          '#px-captcha input[type="checkbox"]',
+          '[data-captcha] input[type="checkbox"]'
+        ]
+        
+        for (const selector of checkboxSelectors) {
+          try {
+            const checkbox = await page.$(selector)
+            if (checkbox) {
+              const isVisible = await page.evaluate((el: any) => {
+                return el && el.offsetParent !== null
+              }, checkbox)
+              
+              if (isVisible) {
+                console.log(`  → Marcando checkbox captcha (${selector})...`)
+                await checkbox.click({ delay: 100 })
+                await new Promise(resolve => setTimeout(resolve, 3000))
+                
+                // Después de hacer click en checkbox, puede aparecer el visual captcha
+                await solveVisualRecaptcha()
+                
+                console.log('  ✅ Captcha marcado automáticamente')
+                return true
+              }
+            }
+          } catch (e) {
+            // Continuar si hay error
+          }
+        }
+      } catch (error) {
+        console.log(`  ⚠️ Error al intentar resolver captcha automáticamente: ${(error as Error).message}`)
+      }
+      return false
+    }
+
+    // Intentar resolver captcha antes del login
+    await attemptAutoCaptcha('pre-login')
+    
+    console.log('  → Esperando campos de login...')
+    await page.waitForSelector('input[name="username"], input[type="email"]', { timeout: 10000 })
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
+    // Ingresar credenciales con delay más realista
+    console.log('  → Ingresando credenciales...')
+    await page.type('input[name="username"], input[type="email"]', credentials.email || credentials.username || '', { delay: 100 })
+    await new Promise(resolve => setTimeout(resolve, 500))
+    await page.type('input[name="password"], input[type="password"]', credentials.password, { delay: 100 })
+    await new Promise(resolve => setTimeout(resolve, 1000))
+
+    // Buscar y hacer clic en el botón de login de forma más robusta
+    console.log('  → Buscando botón de login...')
+    const loginButtonClicked = await page.evaluate(() => {
+      const selectors = [
+        'button[type="submit"]',
+        'button.login-button',
+        'button[class*="login"]',
+        'input[type="submit"]',
+        'button:has-text("Log in")',
+        'button:has-text("Sign in")'
+      ]
+      
+      for (const selector of selectors) {
+        const btn = document.querySelector(selector) as HTMLElement
+        if (btn && btn.offsetParent !== null && !btn.hasAttribute('disabled')) {
+          btn.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          btn.click()
+          return true
+        }
+      }
+      
+      // Buscar por texto
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'))
+      const loginBtn = buttons.find(btn => {
+        const text = (btn.textContent || (btn as HTMLInputElement).value || '').toLowerCase().trim()
+        return (text.includes('log in') || text.includes('sign in') || text.includes('login')) &&
+               (btn as HTMLElement).offsetParent !== null &&
+               !(btn as HTMLElement).hasAttribute('disabled')
+      })
+      
+      if (loginBtn) {
+        (loginBtn as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' })
+        ;(loginBtn as HTMLElement).click()
+        return true
+      }
+      
+      return false
+    })
+
+    if (!loginButtonClicked) {
+      console.log('  ⚠️ No se encontró botón de login, intentando método alternativo...')
+      await page.keyboard.press('Enter')
+    }
+    
+    // Intentar resolver captcha después del login
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    await attemptAutoCaptcha('post-login')
+    
+    // Esperar navegación
+    console.log('  → Esperando navegación después del login...')
     try {
       await Promise.race([
         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-        new Promise(resolve => setTimeout(resolve, 5000))
+        new Promise(resolve => setTimeout(resolve, 8000))
       ])
     } catch (e) {
-      console.log('⚠️ No se detectó navegación, verificando estado actual...')
+      console.log('  ⚠️ No se detectó navegación, verificando estado actual...')
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000))
+    await new Promise(resolve => setTimeout(resolve, 3000))
     const currentUrl = page.url()
     const pageContent = await page.content()
     
-    const hasCaptcha = pageContent.includes('captcha') || pageContent.includes('recaptcha')
-    const errorMessage = await page.evaluate(() => {
-      const errorEl = document.querySelector('.error, .alert-error, [role="alert"]')
-      return errorEl?.textContent?.trim() || null
+    // Verificar captcha de forma más exhaustiva
+    const captchaInfo = await page.evaluate(() => {
+      const captchaSelectors = [
+        '.g-recaptcha',
+        '#captcha',
+        '[data-captcha]',
+        'iframe[src*="recaptcha"]',
+        'iframe[src*="captcha"]',
+        '.recaptcha',
+        '[class*="captcha"]',
+        '[id*="captcha"]'
+      ]
+      
+      for (const selector of captchaSelectors) {
+        const element = document.querySelector(selector)
+        if (element) {
+          const rect = element.getBoundingClientRect()
+          if (rect.width > 0 && rect.height > 0) {
+            return { found: true, selector, visible: true }
+          }
+        }
+      }
+      
+      const bodyText = document.body.textContent?.toLowerCase() || ''
+      if (bodyText.includes('captcha') || bodyText.includes('recaptcha') || 
+          bodyText.includes('verify you are human') || bodyText.includes('verify you\'re not a robot')) {
+        return { found: true, selector: 'text_match', visible: true }
+      }
+      
+      return { found: false, visible: false }
     })
     
-    const isAuthenticated = !currentUrl.includes('/login')
+    const hasCaptcha = captchaInfo.found || 
+                       pageContent.includes('captcha') || 
+                       pageContent.includes('recaptcha') ||
+                       pageContent.includes('verify you are human') ||
+                       pageContent.includes('verify you\'re not a robot')
+    
+    // Verificar mensaje de error
+    const errorMessage = await page.evaluate(() => {
+      const errorSelectors = ['.error', '.alert-error', '.alert-danger', '[role="alert"]', '[class*="error"]']
+      for (const selector of errorSelectors) {
+        const errorEl = document.querySelector(selector)
+        if (errorEl) {
+          const text = errorEl.textContent?.trim()
+          if (text && text.length > 0) {
+            return text
+          }
+        }
+      }
+      return null
+    })
+    
+    // Verificar autenticación de forma más robusta
+    const isAuthenticated = !currentUrl.includes('/login') && 
+                           (currentUrl.includes('/dashboard') || 
+                            currentUrl.includes('/nx/') ||
+                            currentUrl.includes('/freelancers/') ||
+                            !currentUrl.includes('freelancer.com/login'))
 
     if (isAuthenticated) {
+      console.log('✅ Login exitoso en Freelancer')
       const cookies = await page.cookies()
       const userAgent = await page.evaluate(() => navigator.userAgent)
 
@@ -4714,26 +10058,38 @@ export async function loginFreelancer(credentials: PlatformCredentials): Promise
       }
     }
 
-    let error = 'Login falló - URL no cambió después del login'
+    let error = 'Login falló - No se pudo autenticar exitosamente'
     if (hasCaptcha) {
-      error = 'Captcha detectado'
+      error = 'Captcha detectado - No se pudo resolver automáticamente'
     } else if (errorMessage) {
       error = `Error: ${errorMessage}`
     }
-    
+
+    console.log(`❌ Login en Freelancer falló: ${error}`)
+    console.log(`  → URL final: ${currentUrl}`)
+    if (hasCaptcha) {
+      console.log('  ⚠️ Captcha detectado - La aplicación continuará con otras plataformas que no requieren autenticación')
+    }
+
     return {
       cookies: [],
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       isAuthenticated: false,
       error: error,
-      errorDetails: `URL final: ${currentUrl}`
+      errorDetails: `URL final: ${currentUrl}. ${hasCaptcha ? 'Nota: Freelancer tiene protección anti-bot. La aplicación intentará hacer scraping sin autenticación, pero puede tener limitaciones.' : ''}`
     }
   } catch (error) {
     console.error('❌ Error en login de Freelancer:', error)
     if (error instanceof Error) {
       console.error('   Mensaje:', error.message)
     }
-    return null
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido',
+      errorDetails: 'Error durante el proceso de autenticación'
+    }
   } finally {
     await browser.close()
   }
@@ -4758,66 +10114,243 @@ export async function authenticateAllPlatforms(credentials: {
   glassdoor?: AuthSession
 }> {
   const sessions: any = {}
+  
+  // Mapa para rastrear qué plataformas están en proceso de login
+  const loginInProgress: { [key: string]: boolean } = {}
+  
+  // Contar cuántas plataformas tienen credenciales
+  const platformsToProcess = [
+    { name: 'upwork', cred: credentials.upwork },
+    { name: 'freelancer', cred: credentials.freelancer },
+    { name: 'hireline', cred: credentials.hireline },
+    { name: 'indeed', cred: credentials.indeed },
+    { name: 'braintrust', cred: credentials.braintrust },
+    { name: 'glassdoor', cred: credentials.glassdoor }
+  ].filter(p => p.cred !== undefined)
+  
+  const totalPlatforms = platformsToProcess.length
+  console.log(`\n🚀 Iniciando proceso de autenticación SECUENCIAL para ${totalPlatforms} plataforma(s)`)
+  console.log(`📋 Plataformas a procesar: ${platformsToProcess.map((p: any) => p.name.toUpperCase()).join(', ')}\n`)
 
+  // Procesar una plataforma a la vez, continuando aunque una falle
+  // PLATAFORMA 1: Upwork
   if (credentials.upwork) {
-    console.log('🔐 Intentando login en Upwork...')
+    try {
     sessions.upwork = await loginUpwork(credentials.upwork)
     if (sessions.upwork?.isAuthenticated) {
       console.log('✅ Login exitoso en Upwork')
     } else {
-      console.log('❌ Login falló en Upwork')
+        console.log('❌ Login falló en Upwork:', sessions.upwork?.error || 'Error desconocido')
+      }
+    } catch (error) {
+      console.error('❌ Error durante login de Upwork:', error instanceof Error ? error.message : 'Error desconocido')
+      sessions.upwork = {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: `Excepción: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        errorDetails: error instanceof Error ? error.stack : undefined
+      }
+    } finally {
+      // Marcar que el intento terminó
+      loginInProgress['upwork'] = false
     }
+    // Esperar tiempo EXTENDIDO antes de continuar con la siguiente plataforma
+    console.log(`✅ [1/${totalPlatforms}] UPWORK completado. Esperando antes de continuar con la siguiente plataforma...`)
+    await new Promise(resolve => setTimeout(resolve, 10000))
   }
 
+  // PLATAFORMA 2: Freelancer
   if (credentials.freelancer) {
-    console.log('🔐 Intentando login en Freelancer...')
+    if (loginInProgress['freelancer']) {
+      console.log('  ⚠️ Ya hay un intento de login en Freelancer en progreso, esperando...')
+      while (loginInProgress['freelancer']) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+    }
+    
+    loginInProgress['freelancer'] = true
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`🔐 [2/${totalPlatforms}] Procesando FREELANCER...`)
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    try {
     sessions.freelancer = await loginFreelancer(credentials.freelancer)
     if (sessions.freelancer?.isAuthenticated) {
       console.log('✅ Login exitoso en Freelancer')
     } else {
-      console.log('❌ Login falló en Freelancer')
+        console.log('❌ Login falló en Freelancer:', sessions.freelancer?.error || 'Error desconocido')
+      }
+    } catch (error) {
+      console.error('❌ Error durante login de Freelancer:', error instanceof Error ? error.message : 'Error desconocido')
+      sessions.freelancer = {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: `Excepción: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        errorDetails: error instanceof Error ? error.stack : undefined
+      }
+    } finally {
+      loginInProgress['freelancer'] = false
     }
+    console.log(`✅ [2/${totalPlatforms}] FREELANCER completado. Esperando antes de continuar con la siguiente plataforma...`)
+    await new Promise(resolve => setTimeout(resolve, 10000))
   }
 
+  // PLATAFORMA 3: Hireline
   if (credentials.hireline) {
-    console.log('🔐 Intentando login en Hireline.io...')
+    if (loginInProgress['hireline']) {
+      console.log('  ⚠️ Ya hay un intento de login en Hireline.io en progreso, esperando...')
+      while (loginInProgress['hireline']) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+    }
+    
+    loginInProgress['hireline'] = true
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`🔐 [3/${totalPlatforms}] Procesando HIRELINE...`)
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    try {
     sessions.hireline = await loginHireline(credentials.hireline)
     if (sessions.hireline?.isAuthenticated) {
       console.log('✅ Login exitoso en Hireline.io')
     } else {
-      console.log('❌ Login falló en Hireline.io')
+        console.log('❌ Login falló en Hireline.io:', sessions.hireline?.error || 'Error desconocido')
+      }
+    } catch (error) {
+      console.error('❌ Error durante login de Hireline.io:', error instanceof Error ? error.message : 'Error desconocido')
+      sessions.hireline = {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: `Excepción: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        errorDetails: error instanceof Error ? error.stack : undefined
+      }
+    } finally {
+      loginInProgress['hireline'] = false
     }
+    console.log(`✅ [3/${totalPlatforms}] HIRELINE completado. Esperando antes de continuar con la siguiente plataforma...`)
+    await new Promise(resolve => setTimeout(resolve, 10000))
   }
 
+  // PLATAFORMA 4: Indeed
   if (credentials.indeed) {
-    console.log('🔐 Intentando login en Indeed...')
+    if (loginInProgress['indeed']) {
+      console.log('  ⚠️ Ya hay un intento de login en Indeed en progreso, esperando...')
+      while (loginInProgress['indeed']) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+    }
+    
+    loginInProgress['indeed'] = true
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`🔐 [4/${totalPlatforms}] Procesando INDEED...`)
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    try {
     sessions.indeed = await loginIndeed(credentials.indeed)
     if (sessions.indeed?.isAuthenticated) {
       console.log('✅ Login exitoso en Indeed')
     } else {
-      console.log('❌ Login falló en Indeed')
+        console.log('❌ Login falló en Indeed:', sessions.indeed?.error || 'Error desconocido')
+      }
+    } catch (error) {
+      console.error('❌ Error durante login de Indeed:', error instanceof Error ? error.message : 'Error desconocido')
+      sessions.indeed = {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: `Excepción: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        errorDetails: error instanceof Error ? error.stack : undefined
+      }
+    } finally {
+      loginInProgress['indeed'] = false
     }
+    console.log(`✅ [4/${totalPlatforms}] INDEED completado. Esperando antes de continuar con la siguiente plataforma...`)
+    await new Promise(resolve => setTimeout(resolve, 10000))
   }
 
+  // PLATAFORMA 5: Braintrust
   if (credentials.braintrust) {
-    console.log('🔐 Intentando login en Braintrust...')
+    if (loginInProgress['braintrust']) {
+      console.log('  ⚠️ Ya hay un intento de login en Braintrust en progreso, esperando...')
+      while (loginInProgress['braintrust']) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+    }
+    
+    loginInProgress['braintrust'] = true
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`🔐 [5/${totalPlatforms}] Procesando BRAINTRUST...`)
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    try {
     sessions.braintrust = await loginBraintrust(credentials.braintrust)
     if (sessions.braintrust?.isAuthenticated) {
       console.log('✅ Login exitoso en Braintrust')
     } else {
-      console.log('❌ Login falló en Braintrust')
+        console.log('❌ Login falló en Braintrust:', sessions.braintrust?.error || 'Error desconocido')
+      }
+    } catch (error) {
+      console.error('❌ Error durante login de Braintrust:', error instanceof Error ? error.message : 'Error desconocido')
+      sessions.braintrust = {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: `Excepción: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        errorDetails: error instanceof Error ? error.stack : undefined
+      }
+    } finally {
+      loginInProgress['braintrust'] = false
     }
+    console.log(`✅ [5/${totalPlatforms}] BRAINTRUST completado. Esperando antes de continuar con la siguiente plataforma...`)
+    await new Promise(resolve => setTimeout(resolve, 10000))
   }
 
+  // PLATAFORMA 6: Glassdoor
   if (credentials.glassdoor) {
-    console.log('🔐 Intentando login en Glassdoor...')
+    if (loginInProgress['glassdoor']) {
+      console.log('  ⚠️ Ya hay un intento de login en Glassdoor en progreso, esperando...')
+      while (loginInProgress['glassdoor']) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+    }
+    
+    loginInProgress['glassdoor'] = true
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`🔐 [6/${totalPlatforms}] Procesando GLASSDOOR...`)
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    try {
     sessions.glassdoor = await loginGlassdoor(credentials.glassdoor)
     if (sessions.glassdoor?.isAuthenticated) {
       console.log('✅ Login exitoso en Glassdoor')
     } else {
-      console.log('❌ Login falló en Glassdoor')
+        console.log('❌ Login falló en Glassdoor:', sessions.glassdoor?.error || 'Error desconocido')
+      }
+    } catch (error) {
+      console.error('❌ Error durante login de Glassdoor:', error instanceof Error ? error.message : 'Error desconocido')
+      sessions.glassdoor = {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: `Excepción: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        errorDetails: error instanceof Error ? error.stack : undefined
+      }
+    } finally {
+      loginInProgress['glassdoor'] = false
     }
+    console.log(`✅ [6/${totalPlatforms}] GLASSDOOR completado.`)
   }
+
+  // Resumen final del proceso de autenticación
+  const successCount = Object.values(sessions).filter((s: any) => s?.isAuthenticated).length
+  const failedCount = totalPlatforms - successCount
+  
+  console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+  console.log(`📊 RESUMEN FINAL DE AUTENTICACIÓN:`)
+  console.log(`   Total de plataformas procesadas: ${totalPlatforms}`)
+  console.log(`   ✅ Exitosas: ${successCount}`)
+  console.log(`   ❌ Fallidas: ${failedCount}`)
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`)
 
   return sessions
 }
+
+

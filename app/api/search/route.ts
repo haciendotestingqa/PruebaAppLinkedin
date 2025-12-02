@@ -6,6 +6,10 @@ import { getAllJobsScraper } from '@/lib/job-scraper'
 // No importar freelanceJobs - solo usar scrapers reales
 // import { freelanceJobs } from '@/lib/freelance-jobs'
 
+// Force dynamic rendering to avoid build-time timeouts
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
 export async function POST(request: NextRequest) {
   try {
     console.log('🔍 POST /api/search - Iniciando búsqueda...')

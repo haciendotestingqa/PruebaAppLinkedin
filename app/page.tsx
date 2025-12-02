@@ -309,40 +309,56 @@ export default function Home() {
 
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="border-b">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold">LinkedIn QA Automation</h1>
-            <Button variant="outline" onClick={loadData}>
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
+      {/* Header Section */}
+      <header className="sticky top-0 z-50 w-full border-b bg-white/80 backdrop-blur-sm dark:bg-slate-950/80">
+        <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex h-16 items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-md">
+                <Search className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
+                  LinkedIn QA Automation
+                </h1>
+                <p className="hidden text-xs text-muted-foreground sm:block">
+                  Automate your job search
+                </p>
+              </div>
+            </div>
+            <Button variant="outline" size="sm" onClick={loadData} className="gap-2">
+              <RefreshCw className="h-4 w-4" />
+              <span className="hidden sm:inline">Refresh</span>
             </Button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 py-8 sm:px-6 lg:px-8">
         {/* Tabs */}
-        <div className="flex gap-2 mb-6 border-b pb-2">
+        <div className="mb-6 flex gap-2 border-b border-border/40">
           <Button
             type="button"
-            variant={activeTab === 'dashboard' ? 'default' : 'outline'}
+            variant={activeTab === 'dashboard' ? 'default' : 'ghost'}
             onClick={() => setActiveTab('dashboard')}
+            className="rounded-b-none border-b-2 border-transparent data-[state=active]:border-primary"
           >
             Dashboard
           </Button>
           <Button
             type="button"
-            variant={activeTab === 'profile' ? 'default' : 'outline'}
+            variant={activeTab === 'profile' ? 'default' : 'ghost'}
             onClick={() => setActiveTab('profile')}
+            className="rounded-b-none border-b-2 border-transparent data-[state=active]:border-primary"
           >
             Profile
           </Button>
           <Button
             type="button"
-            variant={activeTab === 'jobs' ? 'default' : 'outline'}
+            variant={activeTab === 'jobs' ? 'default' : 'ghost'}
             onClick={() => setActiveTab('jobs')}
+            className="rounded-b-none border-b-2 border-transparent data-[state=active]:border-primary"
           >
             Job Search
           </Button>
@@ -352,13 +368,27 @@ export default function Home() {
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
             {!profile && (
-              <Card>
-                <CardContent className="py-8">
+              <Card className="border-2 border-dashed border-border/50 bg-card/50 backdrop-blur-sm">
+                <CardContent className="py-12 px-6 sm:px-12">
                   <div className="text-center space-y-4">
-                    <h2 className="text-xl font-semibold">Welcome to LinkedIn QA Automation</h2>
-                    <p className="text-muted-foreground">
-                      Start by uploading your CV to begin automating your job applications
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+                      <Search className="h-8 w-8 text-primary" />
+                    </div>
+                    <h2 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+                      Welcome to LinkedIn QA Automation
+                    </h2>
+                    <p className="mx-auto max-w-md text-base text-muted-foreground sm:text-lg">
+                      Start by uploading your CV to begin automating your job applications and finding the perfect QA opportunities
                     </p>
+                    <div className="pt-4">
+                      <Button
+                        onClick={() => setActiveTab('profile')}
+                        size="lg"
+                        className="gap-2"
+                      >
+                        Get Started
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -389,18 +419,25 @@ export default function Home() {
         {activeTab === 'jobs' && (
           <div className="space-y-6">
             <PlatformStatusCard />
-            
-            <Card>
-              <CardContent className="py-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl font-semibold mb-2">Find QA Jobs</h2>
+
+            <Card className="border-primary/20 shadow-lg">
+              <CardContent className="py-6 sm:py-8">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-1">
+                    <h2 className="text-2xl font-bold tracking-tight text-foreground">
+                      Find QA Jobs
+                    </h2>
                     <p className="text-muted-foreground">
-                      Search for remote QA positions matching your profile
+                      Search for remote QA positions matching your profile and skills
                     </p>
                   </div>
-                  <Button onClick={handleSearchJobs} disabled={searching || !profile}>
-                    <Search className="h-4 w-4 mr-2" />
+                  <Button
+                    onClick={handleSearchJobs}
+                    disabled={searching || !profile}
+                    size="lg"
+                    className="gap-2 w-full sm:w-auto"
+                  >
+                    <Search className="h-4 w-4" />
                     {searching ? 'Searching...' : 'Search Jobs'}
                   </Button>
                 </div>

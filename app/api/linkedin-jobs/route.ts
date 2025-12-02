@@ -3,6 +3,10 @@ import { getLinkedInScraper } from '@/lib/linkedin-scraper'
 import { getAllJobsScraper } from '@/lib/job-scraper'
 import { db } from '@/lib/storage'
 
+// Force dynamic rendering to avoid build-time timeouts
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
 /**
  * GET /api/linkedin-jobs
  * Obtiene trabajos de múltiples plataformas (LinkedIn, Upwork, Freelancer, Remotive, etc.)

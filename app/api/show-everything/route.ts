@@ -3,6 +3,10 @@ import { db } from '@/lib/storage'
 import { filterJobsByCriteria, MatchResult } from '@/lib/job-matcher'
 import { getLinkedInScraper } from '@/lib/linkedin-scraper'
 
+// Force dynamic rendering to avoid build-time timeouts
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
 export async function GET() {
   try {
     const profile = db.profile.get()

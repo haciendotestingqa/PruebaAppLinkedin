@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server'
 
+// Force dynamic rendering to avoid build-time timeouts
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
 /**
  * Test endpoint para diagnosticar el scraper
  */

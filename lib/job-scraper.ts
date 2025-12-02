@@ -63,16 +63,47 @@ export class JobScraper {
   }
 
   async initializeAuth(): Promise<void> {
+    // Importar sendDebugLog
+    let sendDebugLog: any = () => {}
+    try {
+      const { sendDebugLog: debugLog } = await import('./debug-logger')
+      sendDebugLog = debugLog
+    } catch (e) {
+      // Si no está disponible, usar función vacía
+    }
+    
+    sendDebugLog({
+      type: 'step',
+      message: 'Buscando credenciales en variables de entorno...',
+      details: 'Verificando UPWORK_EMAIL, FREELANCER_EMAIL, HIRELINE_EMAIL, INDEED_EMAIL, BRAINTRUST_EMAIL, GLASSDOOR_EMAIL'
+    })
+    
     const credentials: any = {}
 
     if (process.env.UPWORK_EMAIL && process.env.UPWORK_PASSWORD) {
       credentials.upwork = {
         email: process.env.UPWORK_EMAIL,
-        password: process.env.UPWORK_PASSWORD
+        password: process.env.UPWORK_PASSWORD,
+        securityAnswer: process.env.UPWORK_SECURITY_ANSWER
       }
       console.log('✅ Credenciales de Upwork encontradas')
+      if (process.env.UPWORK_SECURITY_ANSWER) {
+        console.log('✅ Respuesta de seguridad de Upwork encontrada')
+      }
+      sendDebugLog({
+        type: 'success',
+        message: 'Credenciales de Upwork encontradas',
+        platform: 'upwork',
+        details: `Email: ${process.env.UPWORK_EMAIL.substring(0, 3)}*** (oculto por seguridad)`
+      })
     } else {
       console.log('⚠️ Credenciales de Upwork NO encontradas')
+      sendDebugLog({
+        type: 'warning',
+        message: 'Credenciales de Upwork NO encontradas',
+        platform: 'upwork',
+        details: 'Faltan UPWORK_EMAIL o UPWORK_PASSWORD en variables de entorno'
+      })
     }
 
     if (process.env.FREELANCER_EMAIL && process.env.FREELANCER_PASSWORD) {
@@ -82,8 +113,20 @@ export class JobScraper {
         username: process.env.FREELANCER_USERNAME
       }
       console.log('✅ Credenciales de Freelancer encontradas')
+      sendDebugLog({
+        type: 'success',
+        message: 'Credenciales de Freelancer encontradas',
+        platform: 'freelancer',
+        details: `Email: ${process.env.FREELANCER_EMAIL.substring(0, 3)}*** (oculto por seguridad)`
+      })
     } else {
       console.log('⚠️ Credenciales de Freelancer NO encontradas')
+      sendDebugLog({
+        type: 'warning',
+        message: 'Credenciales de Freelancer NO encontradas',
+        platform: 'freelancer',
+        details: 'Faltan FREELANCER_EMAIL o FREELANCER_PASSWORD en variables de entorno'
+      })
     }
 
     if (process.env.HIRELINE_EMAIL && process.env.HIRELINE_PASSWORD) {
@@ -92,8 +135,20 @@ export class JobScraper {
         password: process.env.HIRELINE_PASSWORD
       }
       console.log('✅ Credenciales de Hireline encontradas')
+      sendDebugLog({
+        type: 'success',
+        message: 'Credenciales de Hireline encontradas',
+        platform: 'hireline',
+        details: `Email: ${process.env.HIRELINE_EMAIL.substring(0, 3)}*** (oculto por seguridad)`
+      })
     } else {
       console.log('⚠️ Credenciales de Hireline NO encontradas')
+      sendDebugLog({
+        type: 'warning',
+        message: 'Credenciales de Hireline NO encontradas',
+        platform: 'hireline',
+        details: 'Faltan HIRELINE_EMAIL o HIRELINE_PASSWORD en variables de entorno'
+      })
     }
 
     if (process.env.INDEED_EMAIL && process.env.INDEED_PASSWORD) {
@@ -102,8 +157,20 @@ export class JobScraper {
         password: process.env.INDEED_PASSWORD
       }
       console.log('✅ Credenciales de Indeed encontradas')
+      sendDebugLog({
+        type: 'success',
+        message: 'Credenciales de Indeed encontradas',
+        platform: 'indeed',
+        details: `Email: ${process.env.INDEED_EMAIL.substring(0, 3)}*** (oculto por seguridad)`
+      })
     } else {
       console.log('⚠️ Credenciales de Indeed NO encontradas')
+      sendDebugLog({
+        type: 'warning',
+        message: 'Credenciales de Indeed NO encontradas',
+        platform: 'indeed',
+        details: 'Faltan INDEED_EMAIL o INDEED_PASSWORD en variables de entorno'
+      })
     }
 
     if (process.env.BRAINTRUST_EMAIL && process.env.BRAINTRUST_PASSWORD) {
@@ -112,8 +179,20 @@ export class JobScraper {
         password: process.env.BRAINTRUST_PASSWORD
       }
       console.log('✅ Credenciales de Braintrust encontradas')
+      sendDebugLog({
+        type: 'success',
+        message: 'Credenciales de Braintrust encontradas',
+        platform: 'braintrust',
+        details: `Email: ${process.env.BRAINTRUST_EMAIL.substring(0, 3)}*** (oculto por seguridad)`
+      })
     } else {
       console.log('⚠️ Credenciales de Braintrust NO encontradas')
+      sendDebugLog({
+        type: 'warning',
+        message: 'Credenciales de Braintrust NO encontradas',
+        platform: 'braintrust',
+        details: 'Faltan BRAINTRUST_EMAIL o BRAINTRUST_PASSWORD en variables de entorno'
+      })
     }
 
     if (process.env.GLASSDOOR_EMAIL && process.env.GLASSDOOR_PASSWORD) {
@@ -122,8 +201,20 @@ export class JobScraper {
         password: process.env.GLASSDOOR_PASSWORD
       }
       console.log('✅ Credenciales de Glassdoor encontradas')
+      sendDebugLog({
+        type: 'success',
+        message: 'Credenciales de Glassdoor encontradas',
+        platform: 'glassdoor',
+        details: `Email: ${process.env.GLASSDOOR_EMAIL.substring(0, 3)}*** (oculto por seguridad)`
+      })
     } else {
       console.log('⚠️ Credenciales de Glassdoor NO encontradas')
+      sendDebugLog({
+        type: 'warning',
+        message: 'Credenciales de Glassdoor NO encontradas',
+        platform: 'glassdoor',
+        details: 'Faltan GLASSDOOR_EMAIL o GLASSDOOR_PASSWORD en variables de entorno'
+      })
     }
 
     const platformList: AuthPlatform[] = ['upwork', 'freelancer', 'hireline', 'indeed', 'braintrust', 'glassdoor']
@@ -139,21 +230,60 @@ export class JobScraper {
       glassdoor: false
     } as Record<AuthPlatform, boolean>)
 
-    if (Object.keys(credentials).length > 0) {
-      console.log(`🔐 Inicializando autenticación para ${Object.keys(credentials).length} plataforma(s)...`)
+    const platformsWithCredentials = Object.keys(credentials)
+    
+    if (platformsWithCredentials.length > 0) {
+      console.log(`🔐 Inicializando autenticación para ${platformsWithCredentials.length} plataforma(s)...`)
+      sendDebugLog({
+        type: 'step',
+        message: `Iniciando autenticación para ${platformsWithCredentials.length} plataforma(s)...`,
+        details: `Plataformas a autenticar: ${platformsWithCredentials.join(', ').toUpperCase()}`
+      })
+      
       this.authSessions = await authenticateAllPlatforms(credentials)
       
       // Log del estado de autenticación
       console.log('📊 Estado de autenticación:')
+      sendDebugLog({
+        type: 'step',
+        message: 'Proceso de autenticación completado, verificando resultados...'
+      })
+      
       Object.entries(this.authSessions).forEach(([platform, session]: [string, any]) => {
         if (session?.isAuthenticated) {
           console.log(`  ✅ ${platform}: Autenticado`)
+          sendDebugLog({
+            type: 'success',
+            message: `${platform.toUpperCase()} autenticado exitosamente`,
+            platform: platform,
+            details: `Cookies obtenidas: ${session.cookies?.length || 0}`
+          })
         } else {
           console.log(`  ❌ ${platform}: No autenticado`)
+          sendDebugLog({
+            type: 'error',
+            message: `${platform.toUpperCase()} falló la autenticación`,
+            platform: platform,
+            details: session?.error || 'Error desconocido' + (session?.errorDetails ? `\nDetalles: ${session.errorDetails}` : '')
+          })
         }
+      })
+      
+      const successCount = Object.values(this.authSessions).filter((s: any) => s?.isAuthenticated).length
+      const totalCount = Object.keys(this.authSessions).length
+      
+      sendDebugLog({
+        type: 'success',
+        message: `Proceso de autenticación completado: ${successCount}/${totalCount} plataforma(s) autenticada(s) exitosamente`,
+        details: `Plataformas exitosas: ${successCount}\nPlataformas fallidas: ${totalCount - successCount}`
       })
     } else {
       console.log('⚠️ No hay credenciales configuradas en variables de entorno')
+      sendDebugLog({
+        type: 'warning',
+        message: 'No hay credenciales configuradas en variables de entorno',
+        details: 'No se encontraron credenciales para ninguna plataforma. Verifica tu archivo .env'
+      })
     }
   }
 
