@@ -27,10 +27,15 @@ export async function POST(
     
     switch (platform) {
       case 'upwork':
-        if (process.env.UPWORK_EMAIL && process.env.UPWORK_PASSWORD) {
+        // Usar credenciales de Google si están disponibles, sino usar las de Upwork
+        // (Upwork usa Google OAuth, por lo que las credenciales son las mismas)
+        const googleEmail = process.env.GOOGLE_EMAIL || process.env.UPWORK_EMAIL
+        const googlePassword = process.env.GOOGLE_PASSWORD || process.env.UPWORK_PASSWORD
+        
+        if (googleEmail && googlePassword) {
           credentials = {
-            email: process.env.UPWORK_EMAIL,
-            password: process.env.UPWORK_PASSWORD
+            email: googleEmail,
+            password: googlePassword
           }
         }
         break
