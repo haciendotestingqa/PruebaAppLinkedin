@@ -1,3 +1,6 @@
+// Código base para login de Upwork
+// Generado con: npm run record:upwork
+
 import { Browser, Page } from 'playwright'
 
 export async function loginToUpwork(
@@ -22,12 +25,10 @@ export async function loginToUpwork(
       timeout: 60000
     })
 
-    // TODO: Agregar aquí los pasos de login grabados con Playwright Codegen
-    // 1. Esperar elementos del formulario
-    // 2. Ingresar email
-    // 3. Ingresar contraseña
-    // 4. Hacer clic en botones
-    // 5. Esperar redirección
+    // TODO: Reemplazar con código generado por Playwright Codegen
+    // 1. Hacer click en "Continue with Google"
+    // 2. Manejar popup de Google OAuth
+    // 3. Completar login
 
     console.log('✅ Login exitoso a Upwork!')
     return page
@@ -47,14 +48,4 @@ export async function loginToUpwork(
   }
 }
 
-// Instrucciones para usar Playwright Codegen:
-/*
-1. En tu máquina local (con navegador gráfico), ejecuta:
-   npx playwright codegen --target=typescript https://www.upwork.com/ab/account-security/login
 
-2. En el navegador que se abre, haz login manualmente
-
-3. Copia el código generado y reemplaza el TODO arriba
-
-4. Ajusta los selectores y agrega manejo de errores según sea necesario
-*/

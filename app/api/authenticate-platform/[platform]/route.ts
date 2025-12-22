@@ -1,6 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { loginUpworkPlaywright, manualLoginUpwork, loginFreelancerPlaywright, loginHirelinePlaywright, loginIndeedPlaywright, loginBraintrustPlaywright, loginGlassdoorPlaywright, PlatformCredentials } from '@/lib/platform-auth'
+import {
+  loginUpworkPlaywright,
+  manualLoginUpwork,
+  loginFreelancerPlaywright,
+  loginHirelinePlaywright,
+  loginIndeedPlaywright,
+  loginBraintrustPlaywright,
+  loginGlassdoorPlaywright,
+  loginLinkedinPlaywright,
+  PlatformCredentials
+} from '@/lib/platform-auth'
 import { sendDebugLog, clearDebugLogs } from '@/lib/debug-logger'
+
+// Cargar variables de entorno explícitamente
+const dotenv = require('dotenv')
+dotenv.config({ path: '.env' })
 
 /**
  * POST /api/authenticate-platform/[platform]
@@ -11,7 +25,17 @@ export async function POST(
   { params }: { params: { platform: string } }
 ) {
   const platform = params.platform.toLowerCase()
-  
+
+  // Log de depuración para verificar variables de entorno
+  console.log(`🔍 [${platform.toUpperCase()}] Verificando variables de entorno:`)
+  console.log(`   UPWORK_EMAIL: ${process.env.UPWORK_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+  console.log(`   LINKEDIN_EMAIL: ${process.env.LINKEDIN_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+  console.log(`   FREELANCER_EMAIL: ${process.env.FREELANCER_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+  console.log(`   HIRELINE_EMAIL: ${process.env.HIRELINE_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+  console.log(`   INDEED_EMAIL: ${process.env.INDEED_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+  console.log(`   BRAINTRUST_EMAIL: ${process.env.BRAINTRUST_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+  console.log(`   GLASSDOOR_EMAIL: ${process.env.GLASSDOOR_EMAIL ? '✅ Presente' : '❌ Ausente'}`)
+
   try {
     // Limpiar logs anteriores solo para esta plataforma
     clearDebugLogs()
@@ -80,6 +104,14 @@ export async function POST(
           }
         }
         break
+      case 'linkedin':
+        if (process.env.LINKEDIN_EMAIL && process.env.LINKEDIN_PASSWORD) {
+          credentials = {
+            email: process.env.LINKEDIN_EMAIL,
+            password: process.env.LINKEDIN_PASSWORD
+          }
+        }
+        break
       default:
         sendDebugLog({
           type: 'error',
@@ -93,16 +125,55 @@ export async function POST(
     }
 
     if (!credentials) {
+      // Determinar qué variables faltan para dar un mensaje más específico
+      let missingVars = []
+      switch (platform) {
+        case 'upwork':
+          if (!process.env.UPWORK_EMAIL) missingVars.push('UPWORK_EMAIL')
+          if (!process.env.UPWORK_PASSWORD) missingVars.push('UPWORK_PASSWORD')
+          break
+        case 'linkedin':
+          if (!process.env.LINKEDIN_EMAIL) missingVars.push('LINKEDIN_EMAIL')
+          if (!process.env.LINKEDIN_PASSWORD) missingVars.push('LINKEDIN_PASSWORD')
+          break
+        case 'freelancer':
+          if (!process.env.FREELANCER_EMAIL) missingVars.push('FREELANCER_EMAIL')
+          if (!process.env.FREELANCER_PASSWORD) missingVars.push('FREELANCER_PASSWORD')
+          if (!process.env.FREELANCER_USERNAME) missingVars.push('FREELANCER_USERNAME')
+          break
+        case 'hireline':
+          if (!process.env.HIRELINE_EMAIL) missingVars.push('HIRELINE_EMAIL')
+          if (!process.env.HIRELINE_PASSWORD) missingVars.push('HIRELINE_PASSWORD')
+          break
+        case 'indeed':
+          if (!process.env.INDEED_EMAIL) missingVars.push('INDEED_EMAIL')
+          if (!process.env.INDEED_PASSWORD) missingVars.push('INDEED_PASSWORD')
+          break
+        case 'braintrust':
+          if (!process.env.BRAINTRUST_EMAIL) missingVars.push('BRAINTRUST_EMAIL')
+          if (!process.env.BRAINTRUST_PASSWORD) missingVars.push('BRAINTRUST_PASSWORD')
+          break
+        case 'glassdoor':
+          if (!process.env.GLASSDOOR_EMAIL) missingVars.push('GLASSDOOR_EMAIL')
+          if (!process.env.GLASSDOOR_PASSWORD) missingVars.push('GLASSDOOR_PASSWORD')
+          break
+      }
+
+      const missingVarsText = missingVars.length > 0 ? `Variables faltantes: ${missingVars.join(', ')}` : 'Credenciales incompletas'
+
       sendDebugLog({
         type: 'warning',
-        message: `No se encontraron credenciales para ${platform.toUpperCase()}`,
+        message: `Credenciales faltantes para ${platform.toUpperCase()}`,
         platform: platform,
-        details: 'Verifica que las variables de entorno estén configuradas correctamente en el archivo .env'
+        details: missingVarsText
       })
+
       return NextResponse.json({
         success: false,
-        error: `No se encontraron credenciales para ${platform}`,
-        message: 'Verifica que las variables de entorno estén configuradas correctamente'
+        platform: platform,
+        error: `Credenciales faltantes para ${platform}`,
+        message: missingVarsText,
+        details: 'Configura las variables de entorno en el archivo .env'
       }, { status: 400 })
     }
 
@@ -143,6 +214,9 @@ export async function POST(
         case 'glassdoor':
           session = await loginGlassdoorPlaywright(credentials)
           break
+        case 'linkedin':
+          session = await loginLinkedinPlaywright(credentials)
+          break
       }
 
       if (session?.isAuthenticated) {
@@ -180,7 +254,6 @@ export async function POST(
           platform: platform,
           isAuthenticated: false,
           error: session?.error || 'Error desconocido',
-          errorDetails: session?.errorDetails,
           message: `Autenticación fallida en ${platform.toUpperCase()}`
         }, { status: 400 })
       }

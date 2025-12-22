@@ -50,6 +50,13 @@ interface PlatformStatus {
     error?: string | null
     errorDetails?: string | null
   }
+  linkedin: {
+    hasEmail: boolean
+    hasPassword: boolean
+    isAuthenticated: boolean
+    error?: string | null
+    errorDetails?: string | null
+  }
 }
 
 interface DebugLog {
@@ -194,7 +201,7 @@ export function PlatformStatusCard() {
 
       // Verificar sesiones grabadas para todas las plataformas
       const sessionChecks = await Promise.all(
-        ['upwork', 'freelancer', 'hireline', 'indeed', 'braintrust', 'glassdoor'].map(async (platform) => {
+        ['upwork', 'freelancer', 'hireline', 'indeed', 'braintrust', 'glassdoor', 'linkedin'].map(async (platform) => {
           try {
             const hasSession = await hasRecordedSession(platform)
             return { platform, hasSession }
@@ -523,7 +530,8 @@ export function PlatformStatusCard() {
     hireline: 'Hireline',
     indeed: 'Indeed',
     braintrust: 'Braintrust',
-    glassdoor: 'Glassdoor'
+    glassdoor: 'Glassdoor',
+    linkedin: 'LinkedIn'
   }
 
   if (loading) {

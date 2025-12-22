@@ -1,30 +1,24 @@
 /**
- * Platform Authentication
- * Maneja el login en diferentes plataformas de trabajo freelance
- * Usa Puppeteer para simular un navegador real
+ * Platform Authentication - Sistema de Login Multi-Plataforma
+ *
+ * Maneja la autenticación en plataformas de trabajo freelance:
+ * - Upwork (Google OAuth)
+ * - Freelancer
+ * - Hireline
+ * - Indeed
+ * - Braintrust
+ * - Glassdoor
+ * - LinkedIn
+ *
+ * Usa Playwright para automatización robusta de navegadores
  */
 
-let puppeteer: any
-let playwright: any
-
-if (typeof window === 'undefined') {
-  try {
-    puppeteer = require('puppeteer')
-  } catch (e) {
-    console.warn('Puppeteer not available')
-  }
-
-  try {
-    playwright = require('playwright')
-  } catch (e) {
-    console.warn('Playwright not available')
-  }
-}
+import { chromium, Browser, Page, BrowserContext } from 'playwright'
 
 export interface PlatformCredentials {
   email: string
   password: string
-  username?: string // Para algunas plataformas
+  username?: string
 }
 
 export interface AuthSession {
@@ -32,7 +26,6 @@ export interface AuthSession {
   userAgent: string
   isAuthenticated: boolean
   error?: string
-  errorDetails?: string
 }
 
 /**
@@ -159,8 +152,8 @@ async function maximizeWindow(page: any): Promise<void> {
  * Autenticación en Upwork
  */
 export async function loginUpwork(credentials: PlatformCredentials, interactive: boolean = false): Promise<AuthSession | null> {
-  if (!playwright) {
-    console.error('Playwright no disponible para login en Upwork')
+  if (!puppeteer) {
+    console.error('Puppeteer no disponible para login en Upwork')
     return null
   }
 
@@ -5191,1698 +5184,6 @@ export async function loginUpwork(credentials: PlatformCredentials, interactive:
   return null
 }
 
-// ============================================
-// NUEVA VERSIÓN CON PLAYWRIGHT (solo para login)
-// ============================================
-
-/**
- * Autenticación en Upwork usando Playwright
- * Nueva implementación más robusta y moderna
- */
-/**
- * Registra los pasos manuales del usuario para crear un script de automatización
- */
-export async function recordUpworkLoginSteps(): Promise<void> {
-  console.log('\n🎬 =====================================================')
-  console.log('🎬 REGISTRO DE PASOS PARA LOGIN DE UPWORK')
-  console.log('🎬 =====================================================\n')
-
-  console.log('📋 INSTRUCCIONES:')
-  console.log('1. Se abrirá un navegador')
-  console.log('2. Ve a https://www.upwork.com/ab/account-security/login')
-  console.log('3. Completa el proceso de login MANUALMENTE')
-  console.log('4. Haz todos los clicks y completa todos los campos')
-  console.log('5. El sistema registrará tus acciones')
-  console.log('6. Cuando termines, escribe "FIN" en la consola')
-  console.log('')
-
-  if (!playwright) {
-    console.error('❌ Playwright no disponible')
-    return
-  }
-
-  let browser
-  let context
-  let page: any
-
-  try {
-    // Lanzar navegador en modo no headless para que sea visible
-    browser = await playwright.chromium.launch({
-      headless: false, // Modo visible para que el usuario vea lo que hace
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    })
-
-    context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-
-    page = await context.newPage()
-    await page.setViewportSize({ width: 1280, height: 800 })
-
-    console.log('🌐 Navegando a Upwork...')
-    await page.goto('https://www.upwork.com/ab/account-security/login', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000
-    })
-
-    console.log('✅ Página cargada. Ahora completa el login manualmente.')
-    console.log('🎯 El sistema registrará tus acciones automáticamente...')
-
-    // Array para almacenar los pasos registrados
-    const recordedSteps: any[] = []
-
-    // Registrar navegación
-    recordedSteps.push({
-      type: 'navigation',
-      url: 'https://www.upwork.com/ab/account-security/login',
-      timestamp: new Date().toISOString()
-    })
-
-    // Escuchar eventos de click
-    page.on('click', async (event: any) => {
-      try {
-        const element = event.target as HTMLElement
-        if (element) {
-          const selector = await page.evaluate((el: any) => {
-            // Generar selector único para el elemento
-            if (el.id) return `#${el.id}`
-            if (el.className) return `.${el.className.split(' ').join('.')}`
-            if (el.tagName && el.textContent) return `${el.tagName}:has-text("${el.textContent.substring(0, 20)}")`
-
-            // Selector más específico
-            let path = []
-            let current = el
-            while (current && current.nodeType === Node.ELEMENT_NODE) {
-              let selector = current.tagName.toLowerCase()
-              if (current.id) {
-                selector += `#${current.id}`
-                path.unshift(selector)
-                break
-              } else if (current.className) {
-                selector += `.${current.className.split(' ').join('.')}`
-              }
-              path.unshift(selector)
-              current = current.parentElement
-              if (path.length > 3) break // Limitar profundidad
-            }
-            return path.join(' > ')
-          }, element)
-
-          recordedSteps.push({
-            type: 'click',
-            selector: selector,
-            text: element.textContent?.substring(0, 50) || '',
-            timestamp: new Date().toISOString()
-          })
-
-          console.log(`🖱️ Click registrado: ${selector}`)
-        }
-      } catch (e) {
-        console.log('⚠️ Error registrando click:', e)
-      }
-    })
-
-    // Escuchar cambios en inputs
-    page.on('input', async (event: any) => {
-      try {
-        const input = event.target as HTMLInputElement
-        if (input && (input.type === 'text' || input.type === 'email' || input.type === 'password')) {
-          const selector = await page.evaluate((el: any) => {
-            if (el.id) return `#${el.id}`
-            if (el.name) return `[name="${el.name}"]`
-            if (el.className) return `.${el.className.split(' ').join('.')}`
-            return `${el.tagName}[type="${el.type}"]`
-          }, input)
-
-          // Solo registrar que se escribió algo, no el contenido real por privacidad
-          recordedSteps.push({
-            type: 'input',
-            selector: selector,
-            fieldType: input.type,
-            timestamp: new Date().toISOString()
-          })
-
-          console.log(`⌨️ Input registrado: ${selector} (${input.type})`)
-        }
-      } catch (e) {
-        console.log('⚠️ Error registrando input:', e)
-      }
-    })
-
-    // Escuchar cambios de URL
-    let currentUrl = page.url()
-    const checkUrlChange = () => {
-      setTimeout(async () => {
-        try {
-          const newUrl = page.url()
-          if (newUrl !== currentUrl) {
-            recordedSteps.push({
-              type: 'navigation',
-              url: newUrl,
-              from: currentUrl,
-              timestamp: new Date().toISOString()
-            })
-            console.log(`🔗 Navegación registrada: ${newUrl}`)
-            currentUrl = newUrl
-          }
-          if (!page.isClosed()) checkUrlChange()
-        } catch (e) {
-          // Página cerrada, detener
-        }
-      }, 1000)
-    }
-    checkUrlChange()
-
-    // Esperar hasta que el usuario escriba "FIN" en consola
-    console.log('\n⏳ Esperando que completes el proceso manualmente...')
-    console.log('Cuando termines, escribe "FIN" en esta consola para guardar los pasos registrados.')
-
-    // Función para esperar input del usuario
-    const waitForUserInput = (): Promise<string> => {
-      return new Promise((resolve) => {
-        const readline = require('readline')
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout
-        })
-
-        rl.question('Escribe "FIN" cuando termines: ', (answer: string) => {
-          rl.close()
-          resolve(answer.toLowerCase().trim())
-        })
-      })
-    }
-
-    const userInput = await waitForUserInput()
-
-    if (userInput === 'fin') {
-      console.log('\n📝 PASOS REGISTRADOS:')
-      console.log('==================')
-
-      recordedSteps.forEach((step, index) => {
-        console.log(`${index + 1}. [${step.type.toUpperCase()}] ${step.timestamp}`)
-        if (step.type === 'click') {
-          console.log(`   Selector: ${step.selector}`)
-          console.log(`   Texto: "${step.text}"`)
-        } else if (step.type === 'input') {
-          console.log(`   Selector: ${step.selector}`)
-          console.log(`   Tipo: ${step.fieldType}`)
-        } else if (step.type === 'navigation') {
-          console.log(`   URL: ${step.url}`)
-          if (step.from) console.log(`   Desde: ${step.from}`)
-        }
-        console.log('')
-      })
-
-      // Guardar los pasos en un archivo para referencia futura
-      const fs = require('fs')
-      const stepsFile = './upwork-login-steps.json'
-      fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
-      console.log(`💾 Pasos guardados en: ${stepsFile}`)
-
-      console.log('\n✅ REGISTRO COMPLETADO')
-      console.log('Ahora puedo crear un script automatizado basado en estos pasos.')
-    }
-
-  } catch (error) {
-    console.error('❌ Error durante el registro:', error)
-  } finally {
-    if (browser) {
-      await browser.close()
-      console.log('🗂️ Navegador cerrado.')
-    }
-  }
-}
-
-/**
- * Login completamente manual para Upwork - permite que el usuario haga todo manualmente
- * mientras registra las acciones para crear automatización
- */
-export async function manualLoginUpwork(): Promise<AuthSession | null> {
-  console.log('\n🎬 =====================================================')
-  console.log('🎬 LOGIN MANUAL COMPLETO - UPWORK')
-  console.log('🎬 =====================================================\n')
-
-  console.log('📋 INSTRUCCIONES PARA LOGIN MANUAL:')
-  console.log('1. Se abrirá un navegador automáticamente')
-  console.log('2. Ve manualmente a: https://www.upwork.com/ab/account-security/login')
-  console.log('3. Completa TODO el proceso de login TU MISMO')
-  console.log('4. Haz todos los clicks, completa campos, resuelve captchas')
-  console.log('5. El sistema registrará TODAS tus acciones')
-  console.log('6. Cuando termines y estés logueado, escribe "FIN" en esta consola')
-  console.log('')
-
-  if (!playwright) {
-    console.error('❌ Playwright no disponible')
-    return null
-  }
-
-  let browser
-  let context
-  let page: any
-
-  try {
-    // Lanzar navegador en modo visible para que el usuario vea todo
-    browser = await playwright.chromium.launch({
-      headless: false, // SIEMPRE visible para login manual
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--no-default-browser-check',
-        '--disable-extensions',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-web-security'
-      ]
-    })
-
-    context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      timezoneId: 'America/New_York',
-      geolocation: { latitude: 40.7128, longitude: -74.0060 },
-      permissions: ['geolocation'],
-      deviceScaleFactor: 1,
-      hasTouch: false,
-      isMobile: false,
-      bypassCSP: true,
-      ignoreHTTPSErrors: true,
-      extraHTTPHeaders: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-      }
-    })
-
-    page = await context.newPage()
-
-    // Registrar navegación inicial
-    console.log('🌐 Navegando a Upwork...')
-    await page.goto('https://www.upwork.com/ab/account-security/login', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000
-    })
-
-    console.log('✅ Página de login de Upwork cargada')
-    console.log('🎯 Ahora completa el login manualmente paso a paso')
-    console.log('📝 El sistema registrará automáticamente todas tus acciones\n')
-
-    // Array para almacenar los pasos registrados
-    const recordedSteps: any[] = []
-
-    // Registrar navegación inicial
-    recordedSteps.push({
-      type: 'navigation',
-      url: 'https://www.upwork.com/ab/account-security/login',
-      timestamp: new Date().toISOString(),
-      description: 'Navegación inicial a página de login de Upwork'
-    })
-
-    // Escuchar eventos de click
-    page.on('click', async (event: any) => {
-      try {
-        const element = event.target as HTMLElement
-        if (element) {
-          const selector = await page.evaluate((el: any) => {
-            if (el.id) return `#${el.id}`
-            if (el.className) return `.${el.className.split(' ').join('.')}`
-            if (el.tagName && el.textContent) return `${el.tagName}:has-text("${el.textContent.substring(0, 20)}")`
-
-            let path = []
-            let current = el
-            while (current && current.nodeType === Node.ELEMENT_NODE) {
-              let selector = current.tagName.toLowerCase()
-              if (current.id) {
-                selector += `#${current.id}`
-                path.unshift(selector)
-                break
-              } else if (current.className) {
-                selector += `.${current.className.split(' ').join('.')}`
-              }
-              path.unshift(selector)
-              current = current.parentElement
-              if (path.length > 3) break
-            }
-            return path.join(' > ')
-          }, element)
-
-          recordedSteps.push({
-            type: 'click',
-            selector: selector,
-            text: element.textContent?.substring(0, 50) || '',
-            timestamp: new Date().toISOString(),
-            description: `Click en elemento: ${element.textContent?.substring(0, 30) || 'sin texto'}`
-          })
-
-          console.log(`🖱️ Click registrado: ${selector}`)
-        }
-      } catch (e) {
-        console.log('⚠️ Error registrando click:', e instanceof Error ? e.message : String(e))
-      }
-    })
-
-    // Escuchar cambios en inputs
-    page.on('input', async (event: any) => {
-      try {
-        const input = event.target as HTMLInputElement
-        if (input && (input.type === 'text' || input.type === 'email' || input.type === 'password')) {
-          const selector = await page.evaluate((el: any) => {
-            if (el.id) return `#${el.id}`
-            if (el.name) return `[name="${el.name}"]`
-            if (el.className) return `.${el.className.split(' ').join('.')}`
-            return `${el.tagName}[type="${el.type}"]`
-          }, input)
-
-          recordedSteps.push({
-            type: 'input',
-            selector: selector,
-            fieldType: input.type,
-            timestamp: new Date().toISOString(),
-            description: `Ingreso de texto en campo ${input.type}`
-          })
-
-          console.log(`⌨️ Input registrado: ${selector} (${input.type})`)
-        }
-      } catch (e) {
-        console.log('⚠️ Error registrando input:', e instanceof Error ? e.message : String(e))
-      }
-    })
-
-    // Escuchar cambios de URL
-    let currentUrl = page.url()
-    const checkUrlChange = () => {
-      setTimeout(async () => {
-        try {
-          const newUrl = page.url()
-          if (newUrl !== currentUrl) {
-            recordedSteps.push({
-              type: 'navigation',
-              url: newUrl,
-              from: currentUrl,
-              timestamp: new Date().toISOString(),
-              description: `Navegación de ${currentUrl} a ${newUrl}`
-            })
-            console.log(`🔗 Navegación registrada: ${newUrl}`)
-            currentUrl = newUrl
-          }
-          if (!page.isClosed()) checkUrlChange()
-        } catch (e) {
-          // Página cerrada, detener
-        }
-      }, 1000)
-    }
-    checkUrlChange()
-
-    // Esperar hasta que el usuario escriba "FIN" en consola
-    console.log('\n⏳ Esperando que completes el login manualmente...')
-    console.log('📝 El sistema está registrando todas tus acciones')
-    console.log('🎯 Cuando termines y estés completamente logueado, escribe "FIN" en esta consola')
-    console.log('💡 Si encuentras algún problema, puedes escribir "CANCELAR" para detener\n')
-
-    // Función para esperar input del usuario
-    const waitForUserInput = (): Promise<string> => {
-      return new Promise((resolve) => {
-        const readline = require('readline')
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout
-        })
-
-        rl.question('¿Terminaste el login? Escribe "FIN" o "CANCELAR": ', (answer: string) => {
-          rl.close()
-          resolve(answer.toLowerCase().trim())
-        })
-      })
-    }
-
-    const userInput = await waitForUserInput()
-
-    if (userInput === 'fin') {
-      console.log('✅ Usuario confirmó que terminó el login')
-
-      // Obtener cookies y user agent del navegador
-      const cookies = await context.cookies()
-      const userAgent = await page.evaluate(() => navigator.userAgent)
-      const finalUrl = page.url()
-
-      console.log(`🍪 Cookies obtenidas: ${cookies.length}`)
-      console.log(`🤖 UserAgent obtenido: ${userAgent ? 'SÍ' : 'NO'}`)
-      console.log(`📍 URL final: ${finalUrl}`)
-
-      // Guardar los pasos en un archivo para referencia futura
-      const fs = require('fs')
-      const stepsFile = './upwork-manual-login-steps.json'
-      fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
-      console.log(`💾 Pasos guardados en: ${stepsFile}`)
-
-      console.log('\n📝 PASOS REGISTRADOS:')
-      console.log('==================')
-
-      recordedSteps.forEach((step, index) => {
-        console.log(`${index + 1}. [${step.type.toUpperCase()}] ${new Date(step.timestamp).toLocaleTimeString()}`)
-        if (step.type === 'click') {
-          console.log(`   Selector: ${step.selector}`)
-          console.log(`   Texto: "${step.text}"`)
-        } else if (step.type === 'input') {
-          console.log(`   Selector: ${step.selector}`)
-          console.log(`   Tipo: ${step.fieldType}`)
-        } else if (step.type === 'navigation') {
-          console.log(`   URL: ${step.url}`)
-        }
-        if (step.description) {
-          console.log(`   📝 ${step.description}`)
-        }
-        console.log('')
-      })
-
-      console.log('\n🔍 Verificando que el login fue exitoso...')
-      console.log('🎯 Ejecutando validaciones de autenticación...')
-
-      // Múltiples formas de detectar login exitoso
-      const urlCheck = finalUrl.includes('upwork.com') &&
-                      !finalUrl.includes('/login') &&
-                      !finalUrl.includes('/signin') &&
-                      !finalUrl.includes('/ab/account-security/login')
-
-      console.log(`🔗 Verificación URL: ${urlCheck}`)
-
-      // Verificar elementos específicos del dashboard de Upwork
-      const pageContentCheck = await page.evaluate(() => {
-        const bodyText = document.body.textContent || ''
-
-        // Buscar indicadores de estar logueado
-        const hasDashboard = bodyText.includes('Find Work') ||
-                            bodyText.includes('Dashboard') ||
-                            bodyText.includes('My Stats') ||
-                            bodyText.includes('Profile')
-
-        // Verificar si hay menú de usuario o elementos de usuario logueado
-        const hasUserMenu = !!document.querySelector('[data-cy="user-menu"]') ||
-                           !!document.querySelector('.user-menu') ||
-                           !!document.querySelector('[data-qa="user-dropdown"]') ||
-                           !!document.querySelector('.nav-user')
-
-        // Verificar si hay link de perfil o configuración
-        const hasProfileLink = !!document.querySelector('a[href*="/profile/"]') ||
-                              !!document.querySelector('a[href*="/freelancers/"]') ||
-                              !!document.querySelector('[data-qa="nav-profile"]')
-
-        // Verificar que no hay elementos de login
-        const hasLoginForm = !!document.querySelector('input[type="email"]') ||
-                            !!document.querySelector('input[type="password"]') ||
-                            !!document.querySelector('button:has-text("Log In")') ||
-                            !!document.querySelector('button:has-text("Sign In")')
-
-        return {
-          hasDashboard,
-          hasUserMenu,
-          hasProfileLink,
-          hasLoginForm,
-          isLoggedIn: (hasDashboard || hasUserMenu || hasProfileLink) && !hasLoginForm
-        }
-      })
-
-      console.log(`📊 Verificación de contenido:`)
-      console.log(`   Dashboard: ${pageContentCheck.hasDashboard}`)
-      console.log(`   User Menu: ${pageContentCheck.hasUserMenu}`)
-      console.log(`   Profile Link: ${pageContentCheck.hasProfileLink}`)
-      console.log(`   Login Form: ${pageContentCheck.hasLoginForm}`)
-      console.log(`   Content isLoggedIn: ${pageContentCheck.isLoggedIn}`)
-
-      const isLoggedIn = urlCheck && pageContentCheck.isLoggedIn
-      console.log(`🎯 RESULTADO FINAL: isLoggedIn = ${isLoggedIn}`)
-      console.log(`   urlCheck: ${urlCheck}`)
-      console.log(`   pageContentCheck.isLoggedIn: ${pageContentCheck.isLoggedIn}`)
-
-      if (isLoggedIn) {
-        console.log('✅ ¡LOGIN EXITOSO! Se detectó que estás completamente logueado en Upwork')
-
-        // Obtener cookies y user agent
-        const cookies = await context.cookies()
-        const userAgent = await page.evaluate(() => navigator.userAgent)
-
-        // Guardar los pasos en un archivo para referencia futura
-        const fs = require('fs')
-        const stepsFile = './upwork-manual-login-steps.json'
-        fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
-        console.log(`💾 Pasos guardados en: ${stepsFile}`)
-
-        console.log('\n🎉 PROCESO COMPLETADO EXITOSAMENTE')
-        console.log('✅ Retornando datos de sesión a la aplicación...')
-        console.log(`📤 Enviando ${cookies.length} cookies y userAgent a la app`)
-        console.log('🔄 Cerrando navegador y retornando sesión...')
-        console.log('📡 La API debería recibir esta respuesta y actualizar la app')
-
-        const sessionResult = {
-          cookies,
-          userAgent,
-          isAuthenticated: true
-        }
-
-        console.log('📋 Resumen de sesión que se retorna:', {
-          cookiesCount: cookies.length,
-          hasUserAgent: !!userAgent,
-          isAuthenticated: true
-        })
-
-        return sessionResult
-      } else {
-        console.log('⚠️ La detección automática no confirmó que estás logueado.')
-        console.log(`   URL check: ${urlCheck}`)
-        console.log(`   Content check: ${pageContentCheck.isLoggedIn}`)
-        console.log('')
-        console.log('🤔 ¿Estás realmente logueado en Upwork?')
-        console.log('💡 Si estás en el dashboard de Upwork pero la detección falló, puedes forzar el éxito.')
-        console.log('')
-
-        // Preguntar al usuario si quiere forzar el éxito
-        const forceSuccessInput = (): Promise<string> => {
-          return new Promise((resolve) => {
-            const readline = require('readline')
-            const rl = readline.createInterface({
-              input: process.stdin,
-              output: process.stdout
-            })
-
-            rl.question('¿Estás logueado en Upwork? (SI/NO): ', (answer: string) => {
-              rl.close()
-              resolve(answer.toLowerCase().trim())
-            })
-          })
-        }
-
-        const forceAnswer = await forceSuccessInput()
-
-        if (forceAnswer === 'si' || forceAnswer === 'sí' || forceAnswer === 'yes' || forceAnswer === 'y') {
-          console.log('✅ Usuario confirmó que está logueado. Forzando éxito...')
-
-          // Obtener cookies y user agent de todas formas
-          const cookies = await context.cookies()
-          const userAgent = await page.evaluate(() => navigator.userAgent)
-
-          // Guardar los pasos en un archivo para referencia futura
-          const fs = require('fs')
-          const stepsFile = './upwork-manual-login-steps-forced.json'
-          fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
-          console.log(`💾 Pasos guardados en: ${stepsFile}`)
-
-          console.log('\n🎉 PROCESO COMPLETADO EXITOSAMENTE (FORZADO)')
-          console.log('✅ Retornando datos de sesión a la aplicación...')
-          console.log(`📤 Enviando ${cookies.length} cookies y userAgent a la app`)
-
-          return {
-            cookies,
-            userAgent,
-            isAuthenticated: true
-          }
-        } else {
-          console.log('❌ Usuario confirmó que NO está logueado.')
-          console.log('🔄 Guardando pasos parciales por si quieres revisarlos...')
-
-          // Aun así guardar los pasos por si el usuario quiere revisarlos
-          const fs = require('fs')
-          const stepsFile = './upwork-manual-login-steps-failed.json'
-          fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
-          console.log(`💾 Pasos guardados en: ${stepsFile}`)
-          console.log('❌ Retornando error a la aplicación - usuario no está logueado')
-
-          return {
-            cookies: [],
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            isAuthenticated: false,
-            error: 'Usuario confirmó que no está logueado en Upwork'
-          }
-        }
-      }
-
-    } else if (userInput === 'cancelar') {
-      console.log('❌ Proceso cancelado por el usuario')
-      return {
-        cookies: [],
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        isAuthenticated: false,
-        error: 'Proceso cancelado por el usuario'
-      }
-    } else {
-      console.log('❓ Respuesta no reconocida. Asumiendo cancelación.')
-      return {
-        cookies: [],
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        isAuthenticated: false,
-        error: 'Respuesta no reconocida'
-      }
-    }
-
-  } catch (error) {
-    console.error('❌ Error durante el login manual:', error)
-    return {
-      cookies: [],
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      isAuthenticated: false,
-      error: `Error: ${error instanceof Error ? error.message : 'Error desconocido'}`
-    }
-  } finally {
-    if (browser) {
-      await browser.close()
-      console.log('🗂️ Navegador cerrado.')
-    }
-  }
-}
-
-export async function loginUpworkPlaywright(credentials: PlatformCredentials, interactive: boolean = false): Promise<AuthSession | null> {
-  if (!playwright) {
-    console.error('Playwright no disponible para login en Upwork')
-    return null
-  }
-
-  // Intentar usar sesión grabada primero
-  try {
-    console.log('🎬 Verificando si existe sesión grabada para Upwork...')
-
-    const hasSession = await hasRecordedSession('upwork')
-    if (hasSession) {
-      console.log('✅ Sesión grabada encontrada, intentando login automático...')
-      const sessionResult = await loginUpworkWithRecordedSession(credentials)
-      if (sessionResult) {
-        console.log('✅ Login exitoso usando sesión grabada!')
-        return sessionResult
-      } else {
-        console.log('⚠️ Login con sesión grabada falló, continuando con login manual')
-      }
-    } else {
-      console.log('ℹ️ No se encontró sesión grabada, usando login manual')
-    }
-  } catch (error) {
-    console.warn('⚠️ Error verificando sesión grabada:', error)
-  }
-
-  // Usar Playwright para el login manual
-  let browser: any
-  let context: any
-  let page: any
-  try {
-    console.log('  🚀 Iniciando navegador Playwright para Upwork...')
-
-    // Lanzar navegador Playwright
-    browser = await playwright.chromium.launch({
-      headless: false, // Siempre visible para ver el proceso de Google OAuth
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-extensions',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-field-trial-config',
-        '--disable-back-forward-cache',
-        '--disable-hang-monitor',
-        '--disable-prompt-on-repost',
-        '--force-color-profile=srgb',
-        '--enable-features=NetworkService,NetworkServiceInProcess',
-        '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
-        '--disable-sync',
-        '--metrics-recording-only',
-        '--no-crash-upload',
-        '--disable-logging',
-        '--disable-login-animations',
-        '--disable-notifications',
-        '--disable-permissions-api',
-        '--disable-session-crashed-bubble',
-        '--disable-infobars'
-      ]
-    })
-
-    // Crear contexto y página con configuración avanzada para evadir detección de Google
-    context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      // Configuraciones adicionales para evadir detección de Google
-      locale: 'en-US',
-      timezoneId: 'America/New_York',
-      geolocation: { latitude: 40.7128, longitude: -74.0060 }, // Nueva York
-      permissions: ['geolocation'],
-      // Simular hardware más realista
-      deviceScaleFactor: 1,
-      hasTouch: false,
-      isMobile: false,
-      // Configurar cookies y storage para parecer navegador real
-      storageState: undefined,
-      // Evitar detección de automatización
-      bypassCSP: true,
-      ignoreHTTPSErrors: true,
-      // Configurar headers adicionales para parecer más legítimo
-      extraHTTPHeaders: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"'
-      }
-    })
-
-    page = await context.newPage()
-
-    // Evadir detección de Google modificando propiedades del navegador
-    await page.addInitScript(() => {
-      // Eliminar la propiedad webdriver
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-      })
-
-      // Modificar plugins para que parezca un navegador real
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [
-          {
-            0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: true },
-            description: 'Portable Document Format',
-            filename: 'internal-pdf-viewer',
-            length: 1,
-            name: 'Chrome PDF Plugin'
-          },
-          {
-            0: { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: true },
-            description: 'Portable Document Format',
-            filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-            length: 1,
-            name: 'Chrome PDF Viewer'
-          }
-        ],
-      })
-
-      // Modificar languages
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en'],
-      })
-
-      // Modificar permissions para evadir detección
-      try {
-        const originalQuery = window.navigator.permissions.query
-        window.navigator.permissions.query = (parameters: any) => (
-          parameters.name === 'notifications' ?
-            Promise.resolve({ state: Notification.permission } as any) :
-            originalQuery(parameters)
-        )
-      } catch (e) {
-        // Ignorar errores de permissions
-      }
-    })
-
-    console.log('  ✅ Navegador y página Playwright listos (con evasión de detección)')
-
-    // Esperar un poco para que el navegador se estabilice y parezca más humano
-    await page.waitForTimeout(2000)
-
-    return await loginUpworkWithPlaywright(browser, context, page, credentials, interactive)
-
-  } catch (error) {
-    console.error('❌ Error en loginUpwork con Playwright:', error)
-    return {
-      cookies: [],
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      isAuthenticated: false,
-      error: `Error: ${error instanceof Error ? error.message : 'Error desconocido'}`,
-      errorDetails: error instanceof Error ? error.stack : undefined
-    }
-  } finally {
-    // Limpiar recursos
-    try {
-      if (page) await page.close().catch(() => {})
-      if (context) await context.close().catch(() => {})
-      if (browser) await browser.close().catch(() => {})
-    } catch (closeError) {
-      console.warn('⚠️ Error al cerrar recursos:', closeError)
-    }
-  }
-}
-
-// Función auxiliar que maneja el login real con Playwright
-async function loginUpworkWithPlaywright(browser: any, context: any, page: any, credentials: PlatformCredentials, interactive: boolean): Promise<AuthSession | null> {
-  try {
-    console.log('\n🔐 ============================================================')
-    console.log('🔐 INICIANDO LOGIN EN UPWORK CON PLAYWRIGHT')
-    console.log('🔐 ============================================================\n')
-
-    // PASO 0: PRIMERO AUTENTICAR EN GOOGLE DIRECTAMENTE
-    console.log('\n🔐 ============================================================')
-    console.log('🔐 PASO 0: AUTENTICANDO PRIMERO EN GOOGLE')
-    console.log('🔐 ============================================================\n')
-    console.log('  → Navegando a accounts.google.com para autenticarse primero...')
-
-    // Navegar a Google Sign In
-    await page.goto('https://accounts.google.com/signin', {
-      waitUntil: 'networkidle',
-      timeout: 30000
-    })
-
-    console.log('  ✅ Página de Google Sign In cargada')
-    await page.waitForTimeout(2000)
-
-    // Ingresar email
-    console.log('  → Ingresando email en Google...')
-    await page.waitForSelector('input[type="email"], input[name="identifier"], input[id="identifierId"]', {
-      timeout: 15000,
-      state: 'visible'
-    })
-
-    await page.click('input[type="email"], input[name="identifier"], input[id="identifierId"]')
-    await page.fill('input[type="email"], input[name="identifier"], input[id="identifierId"]', '')
-    await page.fill('input[type="email"], input[name="identifier"], input[id="identifierId"]', credentials.email, { delay: 150 })
-    console.log('  ✅ Email ingresado')
-
-    // Hacer click en "Next" o "Siguiente"
-    await page.waitForTimeout(1000)
-    await page.click('button:has-text("Next"), button:has-text("Siguiente"), button:has-text("Continuar"), #identifierNext', { timeout: 10000 })
-    console.log('  ✅ Click en Next después del email')
-
-    // Esperar a que aparezca el campo de contraseña
-    await page.waitForTimeout(2000)
-    console.log('  → Ingresando contraseña en Google...')
-
-    await page.waitForSelector('input[type="password"], input[name="password"], input[aria-label*="password" i]', {
-      timeout: 15000,
-      state: 'visible'
-    })
-
-    await page.fill('input[type="password"], input[name="password"], input[aria-label*="password" i]', credentials.password, { delay: 150 })
-    console.log('  ✅ Contraseña ingresada')
-
-    // Hacer click en "Next" después de la contraseña
-    await page.waitForTimeout(1000)
-    await page.click('button:has-text("Next"), button:has-text("Siguiente"), button:has-text("Continuar"), #passwordNext', { timeout: 10000 })
-    console.log('  ✅ Click en Next después de la contraseña')
-
-    // Esperar a que se complete la autenticación
-    console.log('  ⏳ Esperando a que se complete la autenticación en Google...')
-    await page.waitForTimeout(5000)
-
-    // Verificar si estamos autenticados en Google
-    const currentUrl = page.url()
-    console.log(`  📍 URL actual después del login: ${currentUrl}`)
-
-    if (currentUrl.includes('myaccount.google.com') || currentUrl.includes('accounts.google.com') && !currentUrl.includes('signin')) {
-      console.log('  ✅ Autenticación en Google completada exitosamente')
-    } else {
-      // Verificar si hay algún error
-      const errorElement = await page.locator('[role="alert"], .Ekjuhf, [class*="error"]').first()
-      if (await errorElement.isVisible().catch(() => false)) {
-        const errorText = await errorElement.textContent().catch(() => 'Error desconocido')
-        console.log(`  ⚠️ Posible error detectado: ${errorText}`)
-      }
-      console.log('  ⚠️ Estado de autenticación en Google incierto, pero continuando...')
-    }
-
-    // PASO 1: NAVEGAR A UPWORK Y HACER LOGIN CON GOOGLE
-    console.log('\n🔐 ============================================================')
-    console.log('🔐 PASO 1: NAVEGANDO A UPWORK PARA LOGIN CON GOOGLE')
-    console.log('🔐 ============================================================\n')
-
-    console.log('  → Navegando a Upwork...')
-    await page.goto('https://www.upwork.com/ab/account-security/login', {
-      waitUntil: 'networkidle',
-      timeout: 30000
-    })
-
-    console.log('  ✅ Página de login de Upwork cargada')
-    await page.waitForTimeout(3000)
-
-    // Buscar y hacer click en "Continue with Google"
-    console.log('  → Buscando botón "Continue with Google"...')
-    const googleButtonSelectors = [
-      'button:has-text("Continue with Google")',
-      'button:has-text("Sign in with Google")',
-      'button:has-text("Log in with Google")',
-      'a:has-text("Continue with Google")',
-      'a:has-text("Sign in with Google")',
-      'a:has-text("Log in with Google")',
-      '[data-qa="btn-google"]',
-      '[aria-label*="Google" i]',
-      'button[data-provider="google"]',
-      '.google-login-button',
-      '#google-login-button'
-    ]
-
-    let googleButtonClicked = false
-    for (const selector of googleButtonSelectors) {
-      try {
-        const button = page.locator(selector).first()
-        if (await button.isVisible({ timeout: 2000 })) {
-          await button.click({ timeout: 5000 })
-          console.log(`  ✅ Click en botón Google usando selector: ${selector}`)
-          googleButtonClicked = true
-          break
-        }
-      } catch (e) {
-        // Continuar con el siguiente selector
-      }
-    }
-
-    if (!googleButtonClicked) {
-      console.log('  ❌ No se encontró el botón de Google, intentando con JavaScript...')
-      // Intentar con JavaScript como último recurso
-      await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, a'))
-        const googleBtn = buttons.find(btn =>
-          btn.textContent?.toLowerCase().includes('google') ||
-          btn.getAttribute('aria-label')?.toLowerCase().includes('google') ||
-          btn.getAttribute('data-provider') === 'google'
-        )
-        if (googleBtn) {
-          (googleBtn as HTMLElement).click()
-          return true
-        }
-        return false
-      }).then((clicked: boolean) => {
-        if (clicked) {
-          console.log('  ✅ Click en botón Google usando JavaScript')
-          googleButtonClicked = true
-        }
-      }).catch(() => {})
-    }
-
-    if (!googleButtonClicked) {
-      throw new Error('No se pudo encontrar ni hacer click en el botón de Google')
-    }
-
-    // Esperar a que aparezca el popup de Google o redirección
-    console.log('  ⏳ Esperando popup de Google o redirección...')
-    await page.waitForTimeout(3000)
-
-    // Verificar si hay un popup (nueva página/ventana)
-    const pages = context.pages()
-    let googlePopup = null
-    if (pages.length > 1) {
-      // Buscar la página de Google entre las páginas abiertas
-      for (const p of pages) {
-        if (p !== page && p.url().includes('accounts.google.com')) {
-          googlePopup = p
-          break
-        }
-      }
-    }
-
-    if (googlePopup) {
-      console.log('  📄 Popup de Google detectado, cambiando foco...')
-      page = googlePopup
-      await page.bringToFront()
-      await page.waitForTimeout(2000)
-
-      // Verificar si ya estamos autenticados en este popup
-      const popupUrl = page.url()
-      if (popupUrl.includes('myaccount.google.com') || popupUrl.includes('accounts.google.com') && !popupUrl.includes('signin')) {
-        console.log('  ✅ Ya autenticado en Google, cerrando popup...')
-        await page.close()
-        // Volver a la página original
-        const originalPages = context.pages()
-        page = originalPages[0] || originalPages.find((p: any) => !p.isClosed())
-      } else {
-        console.log('  ⚠️ Popup requiere autenticación adicional...')
-        // Aquí podría requerir manejo adicional si es necesario
-      }
-    } else {
-      console.log('  📍 No se detectó popup, verificando redirección en página actual...')
-      const currentUrl2 = page.url()
-      console.log(`  📍 URL actual: ${currentUrl2}`)
-
-      if (currentUrl2.includes('myaccount.google.com') || currentUrl2.includes('accounts.google.com') && !currentUrl2.includes('signin')) {
-        console.log('  ✅ Redireccionado a Google, autenticación completada')
-      }
-    }
-
-    // PASO 1.4: MANEJAR VERIFICACIÓN "VERIFYING YOU ARE HUMAN" SI APARECE
-    console.log('\n🔐 ============================================================')
-    console.log('🔐 PASO 1.4: VERIFICANDO "VERIFYING YOU ARE HUMAN"')
-    console.log('🔐 ============================================================\n')
-
-    try {
-      // Esperar un poco para que aparezca la verificación si existe
-      await page.waitForTimeout(2000)
-
-      // Verificar si aparece la pantalla "VERIFYING YOU ARE HUMAN"
-      const humanVerificationDetected = await page.evaluate(() => {
-        const bodyText = document.body.textContent || ''
-        const pageTitle = document.title || ''
-
-        // Buscar indicadores de verificación humana
-        return bodyText.includes('VERIFYING YOU ARE HUMAN') ||
-               bodyText.includes('Verifying you are human') ||
-               bodyText.includes('verifying you are human') ||
-               bodyText.includes('Verify you are human') ||
-               bodyText.includes('verify you\'re not a robot') ||
-               bodyText.includes('Verify you\'re not a robot') ||
-               pageTitle.toLowerCase().includes('verify') ||
-               pageTitle.toLowerCase().includes('human')
-      })
-
-      if (humanVerificationDetected) {
-        console.log('  🤖 Verificación humana detectada: "VERIFYING YOU ARE HUMAN"')
-        console.log('  ⏳ Esperando que se estabilice la página (3 segundos)...')
-        await page.waitForTimeout(3000)
-
-        console.log('  → Buscando checkbox de verificación humana...')
-
-        // Buscar y marcar el checkbox de verificación humana (múltiples intentos)
-        let checkboxClicked = false
-        let checkboxAttempts = 0
-        const maxCheckboxAttempts = 3
-
-        while (!checkboxClicked && checkboxAttempts < maxCheckboxAttempts) {
-          checkboxAttempts++
-          console.log(`  🔍 Intento ${checkboxAttempts}/${maxCheckboxAttempts} de marcar checkbox...`)
-
-          checkboxClicked = await page.evaluate(() => {
-            // Buscar diferentes tipos de checkboxes de verificación humana
-            const checkboxSelectors = [
-              'input[type="checkbox"]',
-              '[role="checkbox"]',
-              '.checkbox',
-              '[data-testid*="checkbox"]',
-              '[aria-label*="human" i]',
-              '[aria-label*="robot" i]',
-              '[aria-label*="verify" i]',
-              'input[aria-label*="human" i]',
-              'input[aria-label*="robot" i]',
-              'input[aria-label*="verify" i]'
-            ]
-
-            for (const selector of checkboxSelectors) {
-              const checkboxes = document.querySelectorAll(selector)
-              for (const checkbox of checkboxes) {
-                const input = checkbox as HTMLInputElement
-                const element = checkbox as HTMLElement
-
-                // Verificar si es un checkbox visible y no está marcado
-                const rect = element.getBoundingClientRect()
-                const isVisible = rect.width > 0 && rect.height > 0 && element.offsetParent !== null
-                const isEnabled = !input.disabled && !input.hasAttribute('readonly')
-                const isNotChecked = !input.checked
-
-                if (isVisible && isEnabled && isNotChecked) {
-                  console.log('Checkbox encontrado:', selector)
-                  input.click()
-                  return true
-                }
-              }
-            }
-            return false
-          })
-
-          if (!checkboxClicked && checkboxAttempts < maxCheckboxAttempts) {
-            console.log('  ⏳ Checkbox no encontrado o no clickeable, esperando 2 segundos...')
-            await page.waitForTimeout(2000)
-          }
-        }
-
-        if (checkboxClicked) {
-          console.log('  ✅ Checkbox de verificación humana marcado')
-          console.log('  ⏳ Esperando que se complete la verificación (5 segundos)...')
-
-          // Esperar más tiempo para que se complete la verificación
-          await page.waitForTimeout(5000)
-
-          // Verificar si la verificación fue exitosa o si se refrescó la página
-          const verificationCompleted = await page.evaluate(() => {
-            const bodyText = document.body.textContent || ''
-            // Si ya no aparece el texto de verificación, probablemente fue exitosa
-            return !bodyText.includes('VERIFYING YOU ARE HUMAN') &&
-                   !bodyText.includes('Verifying you are human') &&
-                   !bodyText.includes('verifying you are human')
-          })
-
-          if (verificationCompleted) {
-            console.log('  ✅ Verificación humana completada exitosamente')
-          } else {
-            console.log('  ⚠️ Verificación humana puede haber fallado, pero continuando...')
-          }
-        } else {
-          console.log('  ⚠️ No se pudo marcar el checkbox de verificación humana')
-          console.log('  → Puede que necesites completarlo manualmente')
-        }
-      } else {
-        console.log('  ✅ No se detectó verificación humana, continuando...')
-      }
-    } catch (humanVerificationError) {
-      console.log('  ⚠️ Error al verificar pantalla de verificación humana:', humanVerificationError instanceof Error ? humanVerificationError.message : 'Desconocido')
-      console.log('  → Continuando con el proceso normal...')
-    }
-
-    // PASO 1.5: MANEJAR PANTALLA DE PASSKEY SI APARECE
-    console.log('\n🔐 ============================================================')
-    console.log('🔐 PASO 1.5: VERIFICANDO PANTALLA DE PASSKEY')
-    console.log('🔐 ============================================================\n')
-
-    try {
-      // Esperar más tiempo para que aparezca la pantalla de passkey si existe
-      console.log('  ⏳ Esperando que se estabilice la pantalla (5 segundos)...')
-      await page.waitForTimeout(5000)
-
-      // Verificar múltiples veces si aparece la pantalla de passkey (hasta 3 intentos)
-      let passkeyScreenDetected = false
-      let attempts = 0
-      const maxAttempts = 3
-
-      while (!passkeyScreenDetected && attempts < maxAttempts) {
-        attempts++
-        console.log(`  🔍 Intento ${attempts}/${maxAttempts} de detectar pantalla de passkey...`)
-
-        passkeyScreenDetected = await page.evaluate(() => {
-          const bodyText = document.body.textContent || ''
-          const pageTitle = document.title || ''
-
-          // Buscar indicadores de pantalla de passkey
-          return bodyText.includes('Verifying it is you') ||
-                 bodyText.includes('Complete sign up using your passkey') ||
-                 bodyText.includes('Complete sing up using your passkey') ||
-                 pageTitle.toLowerCase().includes('verify') ||
-                 pageTitle.toLowerCase().includes('passkey')
-        })
-
-        if (!passkeyScreenDetected && attempts < maxAttempts) {
-          console.log('  ⏳ Pantalla de passkey no detectada, esperando 2 segundos más...')
-          await page.waitForTimeout(2000)
-        }
-      }
-
-      if (passkeyScreenDetected) {
-        console.log('  🔑 ¡Pantalla de passkey detectada!: "Verifying it is you Complete sign up using your passkey"')
-        console.log('  ⏳ Esperando que se estabilice completamente el popup (3 segundos)...')
-        await page.waitForTimeout(3000)
-
-        console.log('  → Buscando botón "Cancel"...')
-
-        // Buscar y hacer click en "Cancel" (múltiples intentos)
-        let cancelClicked = false
-        let cancelAttempts = 0
-        const maxCancelAttempts = 5
-
-        while (!cancelClicked && cancelAttempts < maxCancelAttempts) {
-          cancelAttempts++
-          console.log(`  🔍 Intento ${cancelAttempts}/${maxCancelAttempts} de hacer click en "Cancel"...`)
-
-          cancelClicked = await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"], span[role="button"], input[type="button"]'))
-
-            for (const btn of buttons) {
-              const text = (btn.textContent || '').toLowerCase().trim()
-              const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase().trim()
-              const buttonText = (btn.getAttribute('data-text') || '').toLowerCase().trim()
-              const value = (btn.getAttribute('value') || '').toLowerCase().trim()
-
-              // Buscar diferentes variaciones de "Cancel"
-              if (text.includes('cancel') ||
-                  text.includes('cancelar') ||
-                  text.includes('abbrechen') ||
-                  ariaLabel.includes('cancel') ||
-                  buttonText.includes('cancel') ||
-                  value.includes('cancel') ||
-                  text === 'cancel' ||
-                  ariaLabel === 'cancel') {
-
-                // Verificar que el botón sea visible y clickeable
-                const btnElement = btn as HTMLElement
-                const rect = btnElement.getBoundingClientRect()
-                const isVisible = rect.width > 0 && rect.height > 0 && btnElement.offsetParent !== null
-                const isEnabled = !(btnElement as any).disabled
-
-                if (isVisible && isEnabled) {
-                  console.log('Botón encontrado:', text, 'aria-label:', ariaLabel)
-                  btnElement.click()
-                  return true
-                }
-              }
-            }
-            return false
-          })
-
-          if (!cancelClicked && cancelAttempts < maxCancelAttempts) {
-            console.log('  ⏳ Botón "Cancel" no encontrado o no clickeable, esperando 1 segundo...')
-            await page.waitForTimeout(1000)
-          }
-        }
-
-        if (cancelClicked) {
-          console.log('  ✅ ¡Click en "Cancel" realizado exitosamente!')
-          console.log('  ⏳ Esperando que se cierre el popup y se cargue la siguiente pantalla (4 segundos)...')
-          await page.waitForTimeout(4000)
-        } else {
-          console.log('  ⚠️ No se pudo hacer click en "Cancel" después de múltiples intentos')
-          console.log('  → Intentando con "Try another way" como fallback...')
-
-          // Intentar como fallback con "Try another way"
-          let tryAnotherWayClicked = false
-          let fallbackAttempts = 0
-          const maxFallbackAttempts = 3
-
-          while (!tryAnotherWayClicked && fallbackAttempts < maxFallbackAttempts) {
-            fallbackAttempts++
-            console.log(`  🔍 Intento fallback ${fallbackAttempts}/${maxFallbackAttempts} con "Try another way"...`)
-
-            tryAnotherWayClicked = await page.evaluate(() => {
-              const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"]'))
-              for (const btn of buttons) {
-                const text = (btn.textContent || '').toLowerCase().trim()
-                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase().trim()
-
-                if (text.includes('try another way') ||
-                    text.includes('try another') ||
-                    text.includes('intentar otra forma') ||
-                    text.includes('otra forma') ||
-                    text.includes('use another way') ||
-                    ariaLabel.includes('try another way') ||
-                    ariaLabel.includes('try another')) {
-
-                  // Verificar que el botón sea visible y clickeable
-                  const btnElement = btn as HTMLElement
-                  const rect = btnElement.getBoundingClientRect()
-                  const isVisible = rect.width > 0 && rect.height > 0 && btnElement.offsetParent !== null
-                  const isEnabled = !(btnElement as any).disabled
-
-                  if (isVisible && isEnabled) {
-                    btnElement.click()
-                    return true
-                  }
-                }
-              }
-              return false
-            })
-
-            if (!tryAnotherWayClicked && fallbackAttempts < maxFallbackAttempts) {
-              console.log('  ⏳ Botón fallback no encontrado, esperando 1 segundo...')
-              await page.waitForTimeout(1000)
-            }
-          }
-
-          if (tryAnotherWayClicked) {
-            console.log('  ✅ Click en "Try another way" realizado (fallback)')
-            await page.waitForTimeout(4000)
-          } else {
-            console.log('  ⚠️ No se pudieron encontrar botones válidos después de múltiples intentos')
-          }
-        }
-      } else {
-        console.log('  ✅ No se detectó pantalla de passkey después de múltiples verificaciones, continuando...')
-      }
-    } catch (passkeyError) {
-      console.log('  ⚠️ Error al verificar pantalla de passkey:', passkeyError instanceof Error ? passkeyError.message : 'Desconocido')
-      console.log('  → Continuando con el proceso normal...')
-    }
-
-    // PASO 2: VERIFICAR AUTENTICACIÓN EN UPWORK
-    console.log('\n🔐 ============================================================')
-    console.log('🔐 PASO 2: VERIFICANDO AUTENTICACIÓN EN UPWORK')
-    console.log('🔐 ============================================================\n')
-
-    // Esperar un poco más para que se complete el proceso
-    await page.waitForTimeout(5000)
-
-    // Verificar si estamos en Upwork y autenticados
-    const finalUrl = page.url()
-    console.log(`  📍 URL final: ${finalUrl}`)
-
-    if (finalUrl.includes('upwork.com') && !finalUrl.includes('login') && !finalUrl.includes('signin')) {
-      console.log('  ✅ ¡Login en Upwork completado exitosamente!')
-
-      // Obtener cookies y user agent para la sesión
-      const cookies = await context.cookies()
-      const userAgent = await page.evaluate(() => navigator.userAgent)
-
-      return {
-        cookies,
-        userAgent,
-        isAuthenticated: true
-      }
-    } else {
-      // Verificar si hay errores en la página
-      const pageContent = await page.textContent('body')
-      if (pageContent?.toLowerCase().includes('technical difficulties') ||
-          pageContent?.toLowerCase().includes('unable to process') ||
-          pageContent?.toLowerCase().includes('try again later')) {
-        throw new Error('Upwork reporta "technical difficulties"')
-      }
-
-      console.log('  ⚠️ Estado de autenticación incierto, pero continuando...')
-      // Aun así devolver como exitoso si llegamos aquí
-      const cookies = await context.cookies()
-      const userAgent = await page.evaluate(() => navigator.userAgent)
-
-      return {
-        cookies,
-        userAgent,
-        isAuthenticated: true
-      }
-    }
-
-  } catch (error) {
-    console.error('❌ Error en loginUpworkWithPlaywright:', error)
-
-    // Capturar información de diagnóstico si es posible
-    try {
-      if (page && !page.isClosed()) {
-        const diagnostics = await page.evaluate(() => {
-          return {
-            url: window.location.href,
-            title: document.title,
-            userAgent: navigator.userAgent,
-            hasError: document.querySelector('[role="alert"], .alert-error') !== null,
-            errorText: (document.querySelector('[role="alert"], .alert-error') as HTMLElement)?.textContent || '',
-            passwordFieldExists: document.querySelector('input[type="password"]') !== null,
-            loginButtonExists: Array.from(document.querySelectorAll('button, input[type="submit"]')).some(btn =>
-              (btn.textContent || '').toLowerCase().includes('log in') ||
-              (btn.textContent || '').toLowerCase().includes('login')
-            )
-          }
-        })
-        console.log('  🔍 Información de diagnóstico:', diagnostics)
-      }
-    } catch (diagError) {
-      console.warn('⚠️ No se pudo capturar información de diagnóstico:', diagError)
-    }
-
-    throw error
-  }
-}
-
-// ============================================
-// FUNCIONES GENÉRICAS DE LOGIN CON PLAYWRIGHT
-// ============================================
-
-/**
- * Función genérica para login con Playwright
- * Maneja la lógica común de navegación y autenticación
- */
-async function genericPlaywrightLogin(
-  platformName: string,
-  loginUrl: string,
-  credentials: PlatformCredentials,
-  options: {
-    emailSelectors?: string[]
-    passwordSelectors?: string[]
-    submitSelectors?: string[]
-    successUrls?: string[]
-    errorSelectors?: string[]
-    customSteps?: (page: any) => Promise<void>
-  }
-): Promise<AuthSession | null> {
-  if (!playwright) {
-    console.error(`Playwright no disponible para login en ${platformName}`)
-    return null
-  }
-
-  let browser
-  let context
-  let page: any
-  try {
-    console.log(`  🚀 Iniciando navegador Playwright para ${platformName}...`)
-
-    browser = await playwright.chromium.launch({
-      headless: false,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-extensions'
-      ]
-    })
-
-    context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-
-    page = await context.newPage()
-    console.log(`  ✅ Navegador y página Playwright listos para ${platformName}`)
-
-    // Navegar a la página de login
-    console.log(`  → Navegando a ${loginUrl}...`)
-    await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 })
-    await page.waitForTimeout(2000)
-
-    // Ejecutar pasos personalizados si existen
-    if (options.customSteps) {
-      await options.customSteps(page)
-    }
-
-    // Ingresar email
-    console.log('  → Ingresando email...')
-    const emailSelectors = options.emailSelectors || [
-      'input[type="email"]',
-      'input[name="email"]',
-      'input[name="username"]',
-      'input[id="email"]',
-      'input[id="username"]',
-      'input[placeholder*="email" i]',
-      'input[placeholder*="correo" i]'
-    ]
-
-    let emailFound = false
-    for (const selector of emailSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 3000, state: 'visible' })
-        await page.fill(selector, '')
-        await page.fill(selector, credentials.email, { delay: 100 })
-        console.log(`  ✅ Email ingresado usando selector: ${selector}`)
-        emailFound = true
-        break
-      } catch (e) {
-        // Continuar con el siguiente selector
-      }
-    }
-
-    if (!emailFound) {
-      throw new Error('No se pudo encontrar el campo de email')
-    }
-
-    // Ingresar contraseña
-    console.log('  → Ingresando contraseña...')
-    const passwordSelectors = options.passwordSelectors || [
-      'input[type="password"]',
-      'input[name="password"]',
-      'input[name="pass"]',
-      'input[placeholder*="password" i]',
-      'input[placeholder*="contraseña" i]'
-    ]
-
-    let passwordFound = false
-    for (const selector of passwordSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 3000, state: 'visible' })
-        await page.fill(selector, credentials.password, { delay: 100 })
-        console.log(`  ✅ Contraseña ingresada usando selector: ${selector}`)
-        passwordFound = true
-        break
-      } catch (e) {
-        // Continuar con el siguiente selector
-      }
-    }
-
-    if (!passwordFound) {
-      throw new Error('No se pudo encontrar el campo de contraseña')
-    }
-
-    // Hacer submit del formulario
-    console.log('  → Enviando formulario...')
-    const submitSelectors = options.submitSelectors || [
-      'button[type="submit"]',
-      'input[type="submit"]',
-      'button:has-text("Login")',
-      'button:has-text("Sign in")',
-      'button:has-text("Log in")',
-      'button:has-text("Iniciar sesión")',
-      'button:has-text("Entrar")',
-      'form button:last-of-type'
-    ]
-
-    let submitted = false
-    for (const selector of submitSelectors) {
-      try {
-        await page.click(selector, { timeout: 3000 })
-        console.log(`  ✅ Formulario enviado usando selector: ${selector}`)
-        submitted = true
-        break
-      } catch (e) {
-        // Continuar con el siguiente selector
-      }
-    }
-
-    if (!submitted) {
-      // Intentar presionar Enter en el campo de contraseña
-      try {
-        await page.keyboard.press('Enter')
-        console.log('  ✅ Formulario enviado presionando Enter')
-        submitted = true
-      } catch (e) {
-        // Continuar
-      }
-    }
-
-    if (!submitted) {
-      throw new Error('No se pudo enviar el formulario')
-    }
-
-    // Esperar a que se complete el login
-    console.log('  ⏳ Esperando a que se complete el login...')
-    await page.waitForTimeout(5000)
-
-    // Verificar resultado
-    const currentUrl = page.url()
-    console.log(`  📍 URL final: ${currentUrl}`)
-
-    // Verificar URLs de éxito
-    const successUrls = options.successUrls || []
-    const isSuccess = successUrls.some(url => currentUrl.includes(url)) ||
-                     (!currentUrl.includes('login') && !currentUrl.includes('signin') && !currentUrl.includes('auth'))
-
-    if (isSuccess) {
-      console.log(`  ✅ ¡Login en ${platformName} completado exitosamente!`)
-
-      const cookies = await context.cookies()
-      const userAgent = await page.evaluate(() => navigator.userAgent)
-
-      return {
-        cookies,
-        userAgent,
-        isAuthenticated: true
-      }
-    } else {
-      // Verificar errores
-      const errorSelectors = options.errorSelectors || [
-        '[class*="error" i]',
-        '[class*="alert" i]',
-        '[role="alert"]',
-        '.error-message',
-        '.alert-danger'
-      ]
-
-      for (const selector of errorSelectors) {
-        try {
-          const errorElement = await page.locator(selector).first()
-          if (await errorElement.isVisible({ timeout: 2000 })) {
-            const errorText = await errorElement.textContent()
-            console.log(`  ⚠️ Error detectado: ${errorText}`)
-            throw new Error(`Error de autenticación: ${errorText}`)
-          }
-        } catch (e) {
-          // Continuar
-        }
-      }
-
-      console.log(`  ⚠️ Estado de autenticación incierto en ${platformName}, pero continuando...`)
-      const cookies = await context.cookies()
-      const userAgent = await page.evaluate(() => navigator.userAgent)
-
-      return {
-        cookies,
-        userAgent,
-        isAuthenticated: true
-      }
-    }
-
-  } catch (error) {
-    console.error(`❌ Error en login ${platformName} con Playwright:`, error)
-    return {
-      cookies: [],
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      isAuthenticated: false,
-      error: `Error: ${error instanceof Error ? error.message : 'Error desconocido'}`,
-      errorDetails: error instanceof Error ? error.stack : undefined
-    }
-  } finally {
-    try {
-      if (page) await page.close().catch(() => {})
-      if (context) await context.close().catch(() => {})
-      if (browser) await browser.close().catch(() => {})
-    } catch (closeError) {
-      console.warn('⚠️ Error al cerrar recursos:', closeError)
-    }
-  }
-}
-
-// ============================================
-// VERSIONES PLAYWRIGHT DE FUNCIONES DE LOGIN
-// ============================================
-
-/**
- * Autenticación en Hireline.io usando Playwright
- */
-export async function loginHirelinePlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
-  return await genericPlaywrightLogin('Hireline', 'https://hireline.io/login', credentials, {
-    successUrls: ['hireline.io/dashboard', 'hireline.io/profile'],
-    errorSelectors: ['.error-message', '.alert-error', '[class*="error"]']
-  })
-}
-
-/**
- * Autenticación en Indeed usando Playwright
- */
-export async function loginIndeedPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
-  return await genericPlaywrightLogin('Indeed', 'https://secure.indeed.com/auth', credentials, {
-    successUrls: ['indeed.com'],
-    errorSelectors: ['.error-message', '.alert-error', '[class*="error"]']
-  })
-}
-
-/**
- * Autenticación en Braintrust usando Playwright
- */
-export async function loginBraintrustPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
-  return await genericPlaywrightLogin('Braintrust', 'https://braintrust.com/login', credentials, {
-    successUrls: ['braintrust.com/dashboard', 'braintrust.com/profile'],
-    errorSelectors: ['.error-message', '.alert-error', '[class*="error"]']
-  })
-}
-
-/**
- * Autenticación en Glassdoor usando Playwright
- */
-export async function loginGlassdoorPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
-  return await genericPlaywrightLogin('Glassdoor', 'https://www.glassdoor.com/profile/login', credentials, {
-    successUrls: ['glassdoor.com'],
-    errorSelectors: ['.error-message', '.alert-error', '[class*="error"]']
-  })
-}
-
-/**
- * Autenticación en Freelancer usando Playwright
- */
-export async function loginFreelancerPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
-  return await genericPlaywrightLogin('Freelancer', 'https://www.freelancer.com/login', credentials, {
-    successUrls: ['freelancer.com'],
-    errorSelectors: ['.error-message', '.alert-error', '[class*="error"]']
-  })
-}
-
-// ============================================
-// VERSIÓN ORIGINAL CON PUPPETEER (backup)
-// ============================================
-
 /**
  * Autenticación en Hireline.io
  */
@@ -6898,7 +5199,7 @@ export async function loginHireline(credentials: PlatformCredentials): Promise<A
   })
 
   try {
-    let page: any = await browser.newPage()
+    let page = await browser.newPage()
     let emailSelector: string | null = null
     
     const recoverFromDetachedFrame = async (error: unknown): Promise<boolean> => {
@@ -7652,7 +5953,7 @@ export async function loginIndeed(credentials: PlatformCredentials): Promise<Aut
   })
 
   try {
-    let page: any = await browser.newPage()
+    let page = await browser.newPage()
     
     const safeGetPageTitle = async (): Promise<string> => {
       try {
@@ -11795,110 +10096,6 @@ export async function loginFreelancer(credentials: PlatformCredentials): Promise
 }
 
 /**
- * Funciones para usar sesiones grabadas automáticamente
- */
-
-/**
- * Intenta login usando sesión grabada, si falla usa login manual
- */
-export async function loginUpworkWithRecordedSession(credentials: PlatformCredentials): Promise<AuthSession | null> {
-  try {
-    console.log('🎬 Intentando login con sesión grabada de Upwork...')
-
-    // Verificar si existe el archivo de sesión grabada
-    const fs = require('fs')
-    const path = require('path')
-    const sessionFile = path.join(process.cwd(), 'scripts', 'generated', 'upwork-session-recorded.ts')
-
-    if (!fs.existsSync(sessionFile)) {
-      console.log('ℹ️ No se encontró archivo de sesión grabada, usando login manual')
-      return await loginUpworkPlaywright(credentials, true)
-    }
-
-    // Leer el archivo y ejecutar su contenido dinámicamente
-    const sessionCode = fs.readFileSync(sessionFile, 'utf8')
-
-    // Crear un contexto seguro para ejecutar el código
-    const vm = require('vm')
-    const context = vm.createContext({
-      console,
-      require,
-      process,
-      Buffer,
-      setTimeout,
-      setInterval,
-      clearTimeout,
-      clearInterval,
-      global,
-      // Importar playwright para el contexto
-      playwright,
-      // Funciones necesarias
-      loginUpworkPlaywright,
-      loginManualUpwork
-    })
-
-    try {
-      // Ejecutar el código en el contexto seguro
-      vm.runInContext(sessionCode, context)
-
-      if (context.loginToUpwork) {
-        console.log('✅ Sesión grabada encontrada, intentando login automático...')
-
-        // Crear instancia de Playwright
-        const browser = await playwright.chromium.launch({
-          headless: false,
-          args: ['--no-sandbox', '--disable-setuid-sandbox']
-        })
-
-        try {
-          const session = await context.loginToUpwork(browser, credentials.email, credentials.password)
-
-          if (session) {
-            console.log('✅ Login exitoso usando sesión grabada!')
-            return {
-              isAuthenticated: true,
-              cookies: [], // Las cookies ya están en la sesión grabada
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              platform: 'upwork'
-            }
-          }
-        } catch (error) {
-          console.warn('⚠️ Login con sesión grabada falló, intentando login manual:', error)
-        } finally {
-          await browser.close()
-        }
-      } else {
-        console.log('ℹ️ Función de sesión grabada no encontrada, usando login manual')
-      }
-    } catch (error) {
-      console.warn('⚠️ Error ejecutando código de sesión grabada:', error)
-    }
-
-    // Fallback a login manual
-    return await loginUpworkPlaywright(credentials, true)
-  } catch (error) {
-    console.error('❌ Error en login con sesión grabada:', error)
-    return null
-  }
-}
-
-/**
- * Verifica si existe una sesión grabada para una plataforma
- */
-export async function hasRecordedSession(platform: string): Promise<boolean> {
-  try {
-    const fs = require('fs')
-    const path = require('path')
-    const sessionFile = path.join(process.cwd(), 'scripts', 'generated', `${platform}-session-recorded.ts`)
-
-    return fs.existsSync(sessionFile)
-  } catch (error) {
-    console.warn(`Error verificando sesión grabada para ${platform}:`, error)
-    return false
-  }
-}
-
-/**
  * Autenticación genérica - intenta login en todas las plataformas
  */
 export async function authenticateAllPlatforms(credentials: {
@@ -11939,7 +10136,7 @@ export async function authenticateAllPlatforms(credentials: {
   // PLATAFORMA 1: Upwork
   if (credentials.upwork) {
     try {
-    sessions.upwork = await loginUpworkPlaywright(credentials.upwork)
+    sessions.upwork = await loginUpwork(credentials.upwork)
     if (sessions.upwork?.isAuthenticated) {
       console.log('✅ Login exitoso en Upwork')
     } else {
@@ -11977,7 +10174,7 @@ export async function authenticateAllPlatforms(credentials: {
     console.log(`🔐 [2/${totalPlatforms}] Procesando FREELANCER...`)
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     try {
-    sessions.freelancer = await loginFreelancerPlaywright(credentials.freelancer)
+    sessions.freelancer = await loginFreelancer(credentials.freelancer)
     if (sessions.freelancer?.isAuthenticated) {
       console.log('✅ Login exitoso en Freelancer')
     } else {
@@ -12013,7 +10210,7 @@ export async function authenticateAllPlatforms(credentials: {
     console.log(`🔐 [3/${totalPlatforms}] Procesando HIRELINE...`)
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     try {
-    sessions.hireline = await loginHirelinePlaywright(credentials.hireline)
+    sessions.hireline = await loginHireline(credentials.hireline)
     if (sessions.hireline?.isAuthenticated) {
       console.log('✅ Login exitoso en Hireline.io')
     } else {
@@ -12049,7 +10246,7 @@ export async function authenticateAllPlatforms(credentials: {
     console.log(`🔐 [4/${totalPlatforms}] Procesando INDEED...`)
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     try {
-    sessions.indeed = await loginIndeedPlaywright(credentials.indeed)
+    sessions.indeed = await loginIndeed(credentials.indeed)
     if (sessions.indeed?.isAuthenticated) {
       console.log('✅ Login exitoso en Indeed')
     } else {
@@ -12085,7 +10282,7 @@ export async function authenticateAllPlatforms(credentials: {
     console.log(`🔐 [5/${totalPlatforms}] Procesando BRAINTRUST...`)
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     try {
-    sessions.braintrust = await loginBraintrustPlaywright(credentials.braintrust)
+    sessions.braintrust = await loginBraintrust(credentials.braintrust)
     if (sessions.braintrust?.isAuthenticated) {
       console.log('✅ Login exitoso en Braintrust')
     } else {
@@ -12121,7 +10318,7 @@ export async function authenticateAllPlatforms(credentials: {
     console.log(`🔐 [6/${totalPlatforms}] Procesando GLASSDOOR...`)
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     try {
-    sessions.glassdoor = await loginGlassdoorPlaywright(credentials.glassdoor)
+    sessions.glassdoor = await loginGlassdoor(credentials.glassdoor)
     if (sessions.glassdoor?.isAuthenticated) {
       console.log('✅ Login exitoso en Glassdoor')
     } else {
@@ -12154,6 +10351,784 @@ export async function authenticateAllPlatforms(credentials: {
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`)
 
   return sessions
+}
+
+/**
+ * Función para login manual de Upwork que usa sesión grabada cuando está disponible
+ * Si no hay sesión grabada, hace login completamente manual
+ */
+export async function manualLoginUpwork(): Promise<AuthSession | null> {
+  console.log('🔄 Iniciando manualLoginUpwork...')
+
+  // Verificar si existe una sesión grabada
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const sessionFile = path.join(process.cwd(), 'scripts', 'generated', 'upwork-session-recorded.ts')
+
+    if (fs.existsSync(sessionFile)) {
+      console.log('✅ Sesión grabada encontrada, intentando usarla...')
+
+      // Leer el archivo de sesión grabada y extraer las cookies
+      const sessionContent = fs.readFileSync(sessionFile, 'utf8')
+
+      // Extraer las cookies del archivo (están en formato JSON)
+      const cookiesMatch = sessionContent.match(/const sessionCookies: Cookie\[\] = (\[[\s\S]*?\])/)
+
+      if (cookiesMatch) {
+        const cookiesJson = cookiesMatch[1]
+        let sessionCookies
+
+        try {
+          // Reemplazar comillas simples por dobles para JSON válido
+          const jsonString = cookiesJson.replace(/'/g, '"')
+          sessionCookies = JSON.parse(jsonString)
+          console.log(`🍪 Cookies de sesión cargadas: ${sessionCookies.length}`)
+        } catch (parseError) {
+          console.log('⚠️ Error parseando cookies de sesión:', parseError.message)
+          console.log('🔄 Procediendo con login manual...')
+          sessionCookies = null
+        }
+
+        if (sessionCookies && sessionCookies.length > 0) {
+          // Usar las cookies de la sesión grabada
+          const { chromium } = require('playwright')
+          const browser = await chromium.launch({ headless: true })
+          const context = await browser.newContext()
+          const page = await context.newPage()
+
+          try {
+            // Establecer las cookies de la sesión
+            await context.addCookies(sessionCookies)
+
+            // Navegar a Upwork para verificar que la sesión funciona
+            console.log('🚀 Verificando sesión grabada...')
+            await page.goto('https://www.upwork.com', {
+              waitUntil: 'networkidle',
+              timeout: 30000
+            })
+
+            // Esperar un poco para que la página cargue
+            await page.waitForTimeout(3000)
+
+            // Verificar que estamos logueados
+            const currentUrl = page.url()
+            const allCookies = await context.cookies()
+
+            console.log(`📍 URL actual: ${currentUrl}`)
+            console.log(`🍪 Cookies totales: ${allCookies.length}`)
+
+            // Verificar si estamos logueados (no estamos en página de login)
+            const isLoggedIn = currentUrl.includes('upwork.com') &&
+                              !currentUrl.includes('/login') &&
+                              !currentUrl.includes('/signin') &&
+                              !currentUrl.includes('/ab/account-security/login')
+
+            // Verificar contenido de la página
+            const pageContentCheck = await page.evaluate(() => {
+              const bodyText = document.body.textContent || ''
+              return bodyText.includes('Find Work') ||
+                     bodyText.includes('Dashboard') ||
+                     bodyText.includes('My Stats') ||
+                     !!document.querySelector('[data-cy="user-menu"]') ||
+                     !!document.querySelector('a[href*="/profile/"]')
+            })
+
+            if (isLoggedIn && pageContentCheck) {
+              console.log('✅ Login exitoso usando sesión grabada')
+
+              const userAgent = await page.evaluate(() => navigator.userAgent)
+              await browser.close()
+
+              return {
+                cookies: allCookies,
+                userAgent,
+                isAuthenticated: true
+              }
+            } else {
+              console.log('⚠️ La sesión grabada no funcionó (URL o contenido no válido)')
+              console.log(`   URL check: ${isLoggedIn}`)
+              console.log(`   Content check: ${pageContentCheck}`)
+              console.log('🔄 Procediendo con login manual...')
+            }
+          } catch (error) {
+            console.log('⚠️ Error usando sesión grabada:', error.message)
+            console.log('🔄 Procediendo con login manual...')
+          } finally {
+            await browser.close()
+          }
+        } else {
+          console.log('⚠️ No se pudieron cargar las cookies de la sesión grabada')
+          console.log('🔄 Procediendo con login manual...')
+        }
+      } else {
+        console.log('⚠️ No se encontraron cookies en el archivo de sesión grabada')
+        console.log('🔄 Procediendo con login manual...')
+      }
+    } else {
+      console.log('📝 No hay sesión grabada, procediendo con login manual completo')
+    }
+  } catch (error) {
+    console.log('⚠️ Error verificando sesión grabada:', error.message)
+    console.log('🔄 Procediendo con login manual...')
+  }
+
+  // Si no hay sesión grabada o falló, hacer login manual completo
+  console.log('🎯 Ejecutando login manual completo de Upwork...')
+
+  const { chromium } = require('playwright')
+  const browser = await chromium.launch({ headless: false })
+  const readline = require('readline')
+
+  let context = null
+  let page = null
+
+  try {
+    context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 720 }
+    })
+
+    page = await context.newPage()
+
+    // Registrar todas las acciones del usuario
+    const recordedSteps: any[] = []
+
+    // Función para registrar clics
+    const recordClick = async (element: any) => {
+      const rect = await element.boundingClientRect()
+      const text = await element.textContent() || ''
+      recordedSteps.push({
+        type: 'click',
+        timestamp: new Date(),
+        selector: await element.evaluate((el: any) => {
+          // Generar selector único
+          if (el.id) return `#${el.id}`
+          if (el.className) return `.${el.className.split(' ').join('.')}`
+          return el.tagName.toLowerCase()
+        }),
+        text: text.trim(),
+        description: `Click en "${text.trim()}"`
+      })
+    }
+
+    // Función para registrar inputs
+    const recordInput = async (element: any, value: string) => {
+      const placeholder = await element.getAttribute('placeholder') || ''
+      const type = await element.getAttribute('type') || 'text'
+      recordedSteps.push({
+        type: 'input',
+        timestamp: new Date(),
+        selector: await element.evaluate((el: any) => {
+          if (el.id) return `#${el.id}`
+          if (el.name) return `[name="${el.name}"]`
+          return `input[type="${type}"]`
+        }),
+        fieldType: type,
+        value: value,
+        description: `Input en campo ${placeholder ? `"${placeholder}"` : type}`
+      })
+    }
+
+    // Monitorear navegación
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) {
+        recordedSteps.push({
+          type: 'navigation',
+          timestamp: new Date(),
+          url: frame.url(),
+          description: 'Navegación a nueva URL'
+        })
+      }
+    })
+
+    // Monitorear clics
+    await page.evaluate(() => {
+      document.addEventListener('click', (event) => {
+        const target = event.target as HTMLElement
+        if (target) {
+          // Enviar información del click al proceso padre
+          (window as any).recordClick && (window as any).recordClick(target)
+        }
+      }, true)
+    })
+
+    console.log('📍 Navegando a Upwork...')
+    await page.goto('https://www.upwork.com/ab/account-security/login', {
+      waitUntil: 'networkidle',
+      timeout: 60000
+    })
+
+    // Verificar URL cada segundo y registrar cambios
+    let lastUrl = page.url()
+    const checkUrlChange = () => {
+      setTimeout(async () => {
+        try {
+          const currentUrl = page.url()
+          if (currentUrl !== lastUrl) {
+            recordedSteps.push({
+              type: 'navigation',
+              timestamp: new Date(),
+              url: currentUrl,
+              description: `URL cambió: ${lastUrl} → ${currentUrl}`
+            })
+            lastUrl = currentUrl
+          }
+        } catch (error) {
+          // Ignorar errores si la página se cerró
+        }
+        checkUrlChange()
+      }, 1000)
+    }
+    checkUrlChange()
+
+    // Esperar hasta que el usuario escriba "FIN" en consola
+    console.log('\n⏳ Esperando que completes el login manualmente...')
+    console.log('📝 El sistema está registrando todas tus acciones')
+    console.log('🎯 Cuando termines y estés completamente logueado, escribe "FIN" en esta consola')
+    console.log('💡 Si encuentras algún problema, puedes escribir "CANCELAR" para detener\n')
+
+    // Función para esperar input del usuario
+    const waitForUserInput = (): Promise<string> => {
+      return new Promise((resolve) => {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout
+        })
+
+        rl.question('¿Terminaste el login? Escribe "FIN" o "CANCELAR": ', (answer: string) => {
+          rl.close()
+          resolve(answer.toLowerCase().trim())
+        })
+      })
+    }
+
+    const userInput = await waitForUserInput()
+
+    if (userInput === 'fin') {
+      console.log('✅ Usuario confirmó que terminó el login')
+
+      // Obtener cookies y user agent del navegador
+      const cookies = await context.cookies()
+      const userAgent = await page.evaluate(() => navigator.userAgent)
+      const finalUrl = page.url()
+
+      console.log(`🍪 Cookies obtenidas: ${cookies.length}`)
+      console.log(`🤖 UserAgent obtenido: ${userAgent ? 'SÍ' : 'NO'}`)
+      console.log(`📍 URL final: ${finalUrl}`)
+
+      // Guardar los pasos en un archivo para referencia futura
+      const fs = require('fs')
+      const stepsFile = './upwork-manual-login-steps.json'
+      fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
+      console.log(`💾 Pasos guardados en: ${stepsFile}`)
+
+      console.log('\n📝 PASOS REGISTRADOS:')
+      console.log('==================')
+
+      recordedSteps.forEach((step, index) => {
+        console.log(`${index + 1}. [${step.type.toUpperCase()}] ${new Date(step.timestamp).toLocaleTimeString()}`)
+        if (step.type === 'click') {
+          console.log(`   Selector: ${step.selector}`)
+          console.log(`   Texto: "${step.text}"`)
+        } else if (step.type === 'input') {
+          console.log(`   Selector: ${step.selector}`)
+          console.log(`   Tipo: ${step.fieldType}`)
+        } else if (step.type === 'navigation') {
+          console.log(`   URL: ${step.url}`)
+        }
+        if (step.description) {
+          console.log(`   📝 ${step.description}`)
+        }
+        console.log('')
+      })
+
+      console.log('\n🔍 Verificando que el login fue exitoso...')
+      console.log('🎯 Ejecutando validaciones de autenticación...')
+
+      // Múltiples formas de detectar login exitoso
+      const urlCheck = finalUrl.includes('upwork.com') &&
+                      !finalUrl.includes('/login') &&
+                      !finalUrl.includes('/signin') &&
+                      !finalUrl.includes('/ab/account-security/login')
+
+      console.log(`🔗 Verificación URL: ${urlCheck}`)
+
+      // Verificar elementos específicos del dashboard de Upwork
+      const pageContentCheck = await page.evaluate(() => {
+        const bodyText = document.body.textContent || ''
+
+        // Buscar indicadores de estar logueado
+        const hasDashboard = bodyText.includes('Find Work') ||
+                            bodyText.includes('Dashboard') ||
+                            bodyText.includes('My Stats') ||
+                            bodyText.includes('Profile')
+
+        // Verificar si hay menú de usuario o elementos de usuario logueado
+        const hasUserMenu = !!document.querySelector('[data-cy="user-menu"]') ||
+                           !!document.querySelector('.user-menu') ||
+                           !!document.querySelector('[data-qa="user-dropdown"]') ||
+                           !!document.querySelector('.nav-user')
+
+        // Verificar si hay link de perfil o configuración
+        const hasProfileLink = !!document.querySelector('a[href*="/profile/"]') ||
+                              !!document.querySelector('a[href*="/freelancers/"]') ||
+                              !!document.querySelector('[data-qa="nav-profile"]')
+
+        // Verificar que no hay elementos de login
+        const hasLoginForm = !!document.querySelector('input[type="email"]') ||
+                            !!document.querySelector('input[type="password"]') ||
+                            !!document.querySelector('button:has-text("Log In")') ||
+                            !!document.querySelector('button:has-text("Sign In")')
+
+        return {
+          hasDashboard,
+          hasUserMenu,
+          hasProfileLink,
+          hasLoginForm,
+          isLoggedIn: (hasDashboard || hasUserMenu || hasProfileLink) && !hasLoginForm
+        }
+      })
+
+      console.log(`📊 Verificación de contenido:`)
+      console.log(`   Dashboard: ${pageContentCheck.hasDashboard}`)
+      console.log(`   User Menu: ${pageContentCheck.hasUserMenu}`)
+      console.log(`   Profile Link: ${pageContentCheck.hasProfileLink}`)
+      console.log(`   Login Form: ${pageContentCheck.hasLoginForm}`)
+      console.log(`   Content isLoggedIn: ${pageContentCheck.isLoggedIn}`)
+
+      const isLoggedIn = urlCheck && pageContentCheck.isLoggedIn
+      console.log(`🎯 RESULTADO FINAL: isLoggedIn = ${isLoggedIn}`)
+      console.log(`   urlCheck: ${urlCheck}`)
+      console.log(`   pageContentCheck.isLoggedIn: ${pageContentCheck.isLoggedIn}`)
+
+      if (isLoggedIn) {
+        console.log('✅ ¡LOGIN EXITOSO! Se detectó que estás completamente logueado en Upwork')
+
+        console.log('\n🎉 PROCESO COMPLETADO EXITOSAMENTE')
+        console.log('✅ Retornando datos de sesión a la aplicación...')
+        console.log(`📤 Enviando ${cookies.length} cookies y userAgent a la app`)
+        console.log('🔄 Cerrando navegador y retornando sesión...')
+        console.log('📡 La API debería recibir esta respuesta y actualizar la app')
+
+        const sessionResult = {
+          cookies,
+          userAgent,
+          isAuthenticated: true
+        }
+
+        console.log('📋 Resumen de sesión que se retorna:', {
+          cookiesCount: cookies.length,
+          hasUserAgent: !!userAgent,
+          isAuthenticated: true
+        })
+
+        return sessionResult
+      } else {
+        console.log('⚠️ La detección automática no confirmó que estás logueado.')
+        console.log(`   URL check: ${urlCheck}`)
+        console.log(`   Content check: ${pageContentCheck.isLoggedIn}`)
+        console.log('')
+        console.log('🤔 ¿Estás realmente logueado en Upwork?')
+        console.log('💡 Si estás en el dashboard de Upwork pero la detección falló, puedes forzar el éxito.')
+        console.log('')
+
+        // Preguntar al usuario si quiere forzar el éxito
+        const forceSuccessInput = (): Promise<string> => {
+          return new Promise((resolve) => {
+            const rl = readline.createInterface({
+              input: process.stdin,
+              output: process.stdout
+            })
+
+            rl.question('¿Estás logueado en Upwork? (SI/NO): ', (answer: string) => {
+              rl.close()
+              resolve(answer.toLowerCase().trim())
+            })
+          })
+        }
+
+        const forceAnswer = await forceSuccessInput()
+
+        if (forceAnswer === 'si' || forceAnswer === 'sí' || forceAnswer === 'yes' || forceAnswer === 'y') {
+          console.log('✅ Usuario confirmó que está logueado. Forzando éxito...')
+
+          console.log('\n🎉 PROCESO COMPLETADO EXITOSAMENTE (FORZADO)')
+          console.log('✅ Retornando datos de sesión a la aplicación...')
+          console.log(`📤 Enviando ${cookies.length} cookies y userAgent a la app`)
+
+          return {
+            cookies,
+            userAgent,
+            isAuthenticated: true
+          }
+        } else {
+          console.log('❌ Usuario confirmó que NO está logueado.')
+          console.log('🔄 Guardando pasos parciales por si quieres revisarlos...')
+
+          // Aun así guardar los pasos por si el usuario quiere revisarlos
+          const fs = require('fs')
+          const stepsFile = './upwork-manual-login-steps-failed.json'
+          fs.writeFileSync(stepsFile, JSON.stringify(recordedSteps, null, 2))
+          console.log(`💾 Pasos guardados en: ${stepsFile}`)
+          console.log('❌ Retornando error a la aplicación - usuario no está logueado')
+
+          return {
+            cookies: [],
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            isAuthenticated: false,
+            error: 'Usuario confirmó que no está logueado en Upwork'
+          }
+        }
+      }
+
+    } else if (userInput === 'cancelar') {
+      console.log('❌ Proceso cancelado por el usuario')
+      return {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: 'Proceso cancelado por el usuario'
+      }
+    } else {
+      console.log('❓ Respuesta no reconocida. Asumiendo cancelación.')
+      return {
+        cookies: [],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        isAuthenticated: false,
+        error: 'Respuesta no reconocida'
+      }
+    }
+
+  } catch (error) {
+    console.error('❌ Error durante el login manual:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: `Error: ${error instanceof Error ? error.message : 'Error desconocido'}`
+    }
+  } finally {
+    if (browser) {
+      await browser.close()
+      console.log('🗂️ Navegador cerrado.')
+    }
+  }
+}
+
+/**
+ * FUNCIONES DE AUTENTICACIÓN LIMPIAS Y ORGANIZADAS
+ * ==================================================
+ */
+
+/**
+ * Login a Upwork - Versión Playwright
+ */
+export async function loginUpworkPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a Upwork con Playwright...')
+
+  let browser: Browser | null = null
+  let context: BrowserContext | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a Upwork
+    await page.goto('https://www.upwork.com/ab/account-security/login', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login completo con Google OAuth
+    console.log('⚠️ Login de Upwork no implementado aún')
+    console.log('💡 Usa manualLoginUpwork() para login interactivo')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginUpworkPlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
+}
+
+/**
+ * Login a Freelancer - Versión Playwright
+ */
+export async function loginFreelancerPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a Freelancer...')
+
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a Freelancer
+    await page.goto('https://www.freelancer.com/login', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login de Freelancer
+    console.log('⚠️ Login de Freelancer no implementado aún')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginFreelancerPlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
+}
+
+/**
+ * Login a Hireline - Versión Playwright
+ */
+export async function loginHirelinePlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a Hireline...')
+
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a Hireline
+    await page.goto('https://hireline.io/login', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login de Hireline
+    console.log('⚠️ Login de Hireline no implementado aún')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginHirelinePlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
+}
+
+/**
+ * Login a Indeed - Versión Playwright
+ */
+export async function loginIndeedPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a Indeed...')
+
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a Indeed
+    await page.goto('https://secure.indeed.com/account/login', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login de Indeed
+    console.log('⚠️ Login de Indeed no implementado aún')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginIndeedPlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
+}
+
+/**
+ * Login a Braintrust - Versión Playwright
+ */
+export async function loginBraintrustPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a Braintrust...')
+
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a Braintrust
+    await page.goto('https://www.usebraintrust.com/login', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login de Braintrust
+    console.log('⚠️ Login de Braintrust no implementado aún')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginBraintrustPlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
+}
+
+/**
+ * Login a Glassdoor - Versión Playwright
+ */
+export async function loginGlassdoorPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a Glassdoor...')
+
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a Glassdoor
+    await page.goto('https://www.glassdoor.com/profile/login_input.htm', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login de Glassdoor
+    console.log('⚠️ Login de Glassdoor no implementado aún')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginGlassdoorPlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
+}
+
+/**
+ * Login a LinkedIn - Versión Playwright
+ */
+export async function loginLinkedinPlaywright(credentials: PlatformCredentials): Promise<AuthSession | null> {
+  console.log('🚀 Iniciando login a LinkedIn...')
+
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ headless: true })
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    const page = await context.newPage()
+
+    // Navegar a LinkedIn
+    await page.goto('https://www.linkedin.com/login', {
+      waitUntil: 'networkidle'
+    })
+
+    // TODO: Implementar login de LinkedIn
+    console.log('⚠️ Login de LinkedIn no implementado aún')
+
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: 'Login no implementado'
+    }
+
+  } catch (error) {
+    console.error('❌ Error en loginLinkedinPlaywright:', error)
+    return {
+      cookies: [],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Error desconocido'
+    }
+  } finally {
+    if (browser) await browser.close()
+  }
 }
 
 

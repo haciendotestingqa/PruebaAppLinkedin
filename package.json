@@ -7,16 +7,30 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "record:login": "ts-node scripts/record-login.ts",
+
+    "_comment": "🎯 GRABACIÓN DE LOGIN - Playwright Codegen",
     "record:upwork": "./scripts/record-login-simple.sh upwork",
-    "record:glassdoor": "./scripts/record-login-simple.sh glassdoor",
-    "record:indeed": "./scripts/record-login-simple.sh indeed",
+    "record:freelancer": "./scripts/record-login-simple.sh freelancer",
     "record:hireline": "./scripts/record-login-simple.sh hireline",
+    "record:indeed": "./scripts/record-login-simple.sh indeed",
+    "record:braintrust": "./scripts/record-login-simple.sh braintrust",
+    "record:glassdoor": "./scripts/record-login-simple.sh glassdoor",
     "record:linkedin": "./scripts/record-login-simple.sh linkedin",
-    "create-login-script": "ts-node scripts/create-login-script.ts",
-    "record:steps": "ts-node scripts/record-steps.ts",
+    "record:linkedin:manual": "./scripts/record-linkedin-manual.sh",
+    "monitor:linkedin": "./scripts/monitor-linkedin-recording.sh",
+
+    "_comment": "💾 GRABACIÓN DE SESIONES COMPLETAS",
     "open:chrome": "ts-node scripts/open-chrome-debug.ts",
     "record:session": "ts-node scripts/record-session.ts",
+
+    "_comment": "🧪 TESTING Y DEBUGGING",
+    "test:manual:login": "ts-node scripts/test-manual-login-upwork.ts",
+    "test:google:popup": "ts-node scripts/test-google-popup-flow.ts",
+    "test:platform": "ts-node scripts/test-single-platform.ts",
+
+    "_comment": "🔧 UTILIDADES LEGACY (mantener por compatibilidad)",
+    "record:login": "ts-node scripts/record-login.ts",
+    "record:steps": "ts-node scripts/record-steps.ts",
     "record:test": "./scripts/test-recording.sh",
     "record:upwork:advanced": "ts-node scripts/record-login.ts upwork",
     "record:upwork:interactive": "ts-node scripts/record-upwork-steps.ts",
@@ -32,8 +46,12 @@
     "record:indeed:advanced": "ts-node scripts/record-login.ts indeed",
     "record:hireline:advanced": "ts-node scripts/record-login.ts hireline",
     "record:linkedin:advanced": "ts-node scripts/record-login.ts linkedin",
-    "test:platform": "ts-node scripts/test-single-platform.ts",
-    "test:playwright": "ts-node scripts/test-playwright-login.ts"
+    "test:playwright": "ts-node scripts/test-playwright-login.ts",
+
+    "_comment": "📋 HERRAMIENTAS DE DESARROLLO",
+    "setup": "./setup-credentials.sh",
+    "check-env": "node check-env.js",
+    "create-login-script": "ts-node scripts/create-login-script.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
