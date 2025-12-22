@@ -1,0 +1,18 @@
+appId: com.evenprocinex.webmovil
+---
+- launchApp:
+    clearState: true
+- tapOn: mobile-nav-toggler
+- tapOn: INICIAR SESIÓN
+- tapOn:
+    id: username
+- inputText: romerovg.16@gmail.com
+- tapOn:
+    id: password
+- inputText: VEr2476494.
+- tapOn:
+    id: btnloginsubmit
+- tapOn: mobile-nav-toggler
+- assertVisible: Hola Verónica
+
+
