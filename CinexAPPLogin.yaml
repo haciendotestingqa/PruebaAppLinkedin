@@ -15,5 +15,3 @@ appId: com.evenprocinex.webmovil
 - tapOn: mobile-nav-toggler
 - assertVisible: Hola Verónica
 ---
-
-
