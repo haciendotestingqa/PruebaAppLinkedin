@@ -43,7 +43,7 @@ export default function Home() {
   })
   const [jobs, setJobs] = useState<MatchResult[]>([])
   const [searching, setSearching] = useState(false)
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'profile' | 'jobs'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'profile' | 'jobs'>('jobs')
   const [appliedJobIds, setAppliedJobIds] = useState<string[]>([])
 
   useEffect(() => {

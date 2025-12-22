@@ -25,7 +25,8 @@ export async function GET() {
       { key: 'hireline', name: 'Hireline', email: 'HIRELINE_EMAIL', password: 'HIRELINE_PASSWORD', username: undefined },
       { key: 'indeed', name: 'Indeed', email: 'INDEED_EMAIL', password: 'INDEED_PASSWORD', username: undefined },
       { key: 'braintrust', name: 'Braintrust', email: 'BRAINTRUST_EMAIL', password: 'BRAINTRUST_PASSWORD', username: undefined },
-      { key: 'glassdoor', name: 'Glassdoor', email: 'GLASSDOOR_EMAIL', password: 'GLASSDOOR_PASSWORD', username: undefined }
+      { key: 'glassdoor', name: 'Glassdoor', email: 'GLASSDOOR_EMAIL', password: 'GLASSDOOR_PASSWORD', username: undefined },
+      { key: 'linkedin', name: 'LinkedIn', email: 'LINKEDIN_EMAIL', password: 'LINKEDIN_PASSWORD', username: undefined }
     ]
     
     // Verificar qué credenciales están disponibles antes de iniciar

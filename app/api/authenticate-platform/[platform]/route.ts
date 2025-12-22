@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { loginUpwork, loginFreelancer, loginHireline, loginIndeed, loginBraintrust, loginGlassdoor, PlatformCredentials } from '@/lib/platform-auth'
+import { loginUpworkPlaywright, manualLoginUpwork, loginFreelancerPlaywright, loginHirelinePlaywright, loginIndeedPlaywright, loginBraintrustPlaywright, loginGlassdoorPlaywright, PlatformCredentials } from '@/lib/platform-auth'
 import { sendDebugLog, clearDebugLogs } from '@/lib/debug-logger'
 
 /**
@@ -27,15 +27,15 @@ export async function POST(
     
     switch (platform) {
       case 'upwork':
-        // Usar credenciales de Google si están disponibles, sino usar las de Upwork
-        // (Upwork usa Google OAuth, por lo que las credenciales son las mismas)
-        const googleEmail = process.env.GOOGLE_EMAIL || process.env.UPWORK_EMAIL
-        const googlePassword = process.env.GOOGLE_PASSWORD || process.env.UPWORK_PASSWORD
-        
-        if (googleEmail && googlePassword) {
+        // Usar credenciales específicas de Upwork
+        // (Upwork usa Google OAuth, pero puede tener credenciales diferentes)
+        const upworkEmail = process.env.UPWORK_EMAIL
+        const upworkPassword = process.env.UPWORK_PASSWORD
+
+        if (upworkEmail && upworkPassword) {
           credentials = {
-            email: googleEmail,
-            password: googlePassword
+            email: upworkEmail,
+            password: upworkPassword
           }
         }
         break
@@ -113,38 +113,49 @@ export async function POST(
       details: `Email: ${credentials.email.substring(0, 3)}***`
     })
 
-    // Autenticar la plataforma específica
+    // Autenticar la plataforma específica usando Playwright
     let session = null
     try {
       switch (platform) {
         case 'upwork':
-          session = await loginUpwork(credentials)
+          // Usar login completamente manual para Upwork
+          console.log('🔄 Iniciando login manual de Upwork...')
+          session = await manualLoginUpwork()
+          console.log('📤 Login manual completado, resultado:', {
+            isAuthenticated: session?.isAuthenticated,
+            hasCookies: session?.cookies?.length || 0,
+            hasUserAgent: !!session?.userAgent,
+            error: session?.error
+          })
           break
         case 'freelancer':
-          session = await loginFreelancer(credentials)
+          session = await loginFreelancerPlaywright(credentials)
           break
         case 'hireline':
-          session = await loginHireline(credentials)
+          session = await loginHirelinePlaywright(credentials)
           break
         case 'indeed':
-          session = await loginIndeed(credentials)
+          session = await loginIndeedPlaywright(credentials)
           break
         case 'braintrust':
-          session = await loginBraintrust(credentials)
+          session = await loginBraintrustPlaywright(credentials)
           break
         case 'glassdoor':
-          session = await loginGlassdoor(credentials)
+          session = await loginGlassdoorPlaywright(credentials)
           break
       }
 
       if (session?.isAuthenticated) {
+        console.log(`✅ ${platform.toUpperCase()} autenticado exitosamente - retornando respuesta...`)
+
         sendDebugLog({
           type: 'success',
           message: `${platform.toUpperCase()} autenticado exitosamente`,
           platform: platform,
           details: `Cookies obtenidas: ${session.cookies?.length || 0}`
         })
-        return NextResponse.json({
+
+        const responseData = {
           success: true,
           platform: platform,
           isAuthenticated: true,
@@ -153,7 +164,10 @@ export async function POST(
             userAgent: session.userAgent
           },
           message: `${platform.toUpperCase()} autenticado exitosamente`
-        })
+        }
+
+        console.log(`📤 Enviando respuesta JSON:`, responseData)
+        return NextResponse.json(responseData)
       } else {
         sendDebugLog({
           type: 'error',

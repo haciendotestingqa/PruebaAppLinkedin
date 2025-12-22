@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { CheckCircle2, XCircle, AlertCircle, RefreshCw } from 'lucide-react'
+import { CheckCircle2, XCircle, AlertCircle, RefreshCw, Video } from 'lucide-react'
 
 interface PlatformStatus {
   upwork: {
@@ -66,6 +66,8 @@ export function PlatformStatusCard() {
   const [debugLogs, setDebugLogs] = useState<DebugLog[]>([])
   const [showDebug, setShowDebug] = useState(false)
   const [authenticatingPlatform, setAuthenticatingPlatform] = useState<string | null>(null)
+  const [recordingPlatform, setRecordingPlatform] = useState<string | null>(null)
+  const [recordedSessions, setRecordedSessions] = useState<Record<string, boolean>>({})
   const eventSourceRef = useRef<EventSource | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
@@ -159,17 +161,177 @@ export function PlatformStatusCard() {
     setLoading(true)
     setDebugLogs([])
     setShowDebug(false) // No mostrar logs automáticamente al cargar estado
-    
+
     try {
       const response = await fetch('/api/debug-platforms')
+      let initialStatus: PlatformStatus | null = null
       if (response.ok) {
         const data = await response.json()
-        setStatus(data.credentials)
+        initialStatus = data.credentials
       }
+
+      // Cargar estado de autenticación desde localStorage
+      try {
+        const savedAuthStatus = localStorage.getItem('platformAuthStatus')
+        if (savedAuthStatus) {
+          const parsedAuthStatus = JSON.parse(savedAuthStatus)
+          if (initialStatus) {
+            // Combinar estado de credenciales con estado de autenticación guardado
+            initialStatus = {
+              ...initialStatus,
+              ...parsedAuthStatus
+            }
+          } else {
+            initialStatus = parsedAuthStatus
+          }
+          console.log('📂 Estado de autenticación cargado desde localStorage:', parsedAuthStatus)
+        }
+      } catch (error) {
+        console.warn('Error cargando estado desde localStorage:', error)
+      }
+
+      setStatus(initialStatus)
+
+      // Verificar sesiones grabadas para todas las plataformas
+      const sessionChecks = await Promise.all(
+        ['upwork', 'freelancer', 'hireline', 'indeed', 'braintrust', 'glassdoor'].map(async (platform) => {
+          try {
+            const hasSession = await hasRecordedSession(platform)
+            return { platform, hasSession }
+          } catch (error) {
+            console.warn(`Error verificando sesión para ${platform}:`, error)
+            return { platform, hasSession: false }
+          }
+        })
+      )
+
+      const sessionMap: Record<string, boolean> = {}
+      sessionChecks.forEach(({ platform, hasSession }) => {
+        sessionMap[platform] = hasSession
+      })
+
+      setRecordedSessions(sessionMap)
+
     } catch (error) {
       console.error('Error loading platform status:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const hasRecordedSession = async (platform: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/has-recorded-session/${platform}`)
+      const data = await response.json()
+      return data.hasSession || false
+    } catch (error) {
+      console.warn(`Error verificando sesión grabada para ${platform}:`, error)
+      return false
+    }
+  }
+
+  const recordSession = async (platform: keyof PlatformStatus) => {
+    // Verificar que no haya otra plataforma siendo grabada
+    if (recordingPlatform) {
+      alert(`Ya hay una sesión siendo grabada para: ${recordingPlatform}. Por favor espera a que termine.`)
+      return
+    }
+
+    setRecordingPlatform(platform)
+
+    try {
+      console.log(`🎬 Iniciando proceso de grabación de sesión para ${platform}...`)
+
+      // URLs de login para cada plataforma
+      const loginUrls: Record<string, string> = {
+        upwork: 'https://www.upwork.com/ab/account-security/login',
+        glassdoor: 'https://www.glassdoor.com/profile/login_input.htm',
+        indeed: 'https://secure.indeed.com/account/login',
+        hireline: 'https://hireline.io/login',
+        linkedin: 'https://www.linkedin.com/login',
+        freelancer: 'https://www.freelancer.com/login',
+        braintrust: 'https://www.usebraintrust.com/login'
+      }
+
+      const loginUrl = loginUrls[platform]
+
+      // Paso 1: Abrir Chrome automáticamente
+      console.log(`🌐 Abriendo Chrome para ${platform}...`)
+      
+      try {
+        const openChromeResponse = await fetch(`/api/open-chrome/${platform}`, {
+          method: 'POST'
+        })
+
+        const openChromeData = await openChromeResponse.json()
+
+        if (!openChromeResponse.ok || !openChromeData.success) {
+          throw new Error(openChromeData.error || 'Error abriendo Chrome')
+        }
+
+        console.log('✅ Chrome abierto exitosamente')
+      } catch (error) {
+        console.error('Error abriendo Chrome:', error)
+        // Si falla abrir Chrome automáticamente, abrir en nueva ventana
+        window.open(loginUrl, '_blank')
+        console.log('📂 Abriendo URL en nueva ventana como fallback')
+      }
+
+      // Paso 2: Mostrar instrucciones y esperar confirmación del usuario
+      const userReady = confirm(
+        `Chrome debería haberse abierto con la página de login de ${platformNames[platform]}.\n\n` +
+        `INSTRUCCIONES:\n` +
+        `1. Si Chrome no se abrió, haz click en OK y se abrirá en una nueva ventana\n` +
+        `2. Haz login MANUALMENTE en ${platformNames[platform]}\n` +
+        `3. Navega por la plataforma si quieres verificar que funciona\n` +
+        `4. NO cierres Chrome\n` +
+        `5. Cuando termines el login, haz click en OK para continuar\n\n` +
+        `¿Ya hiciste login manualmente y estás listo para grabar la sesión?`
+      )
+
+      if (!userReady) {
+        setRecordingPlatform(null)
+        return
+      }
+
+      // Paso 3: Esperar un poco para asegurar que Chrome esté listo
+      console.log('⏳ Esperando 3 segundos para que Chrome esté listo...')
+      await new Promise(resolve => setTimeout(resolve, 3000))
+
+      // Paso 4: Grabar la sesión
+      console.log(`📹 Iniciando grabación de sesión para ${platform}...`)
+
+      const response = await fetch(`/api/record-session/${platform}`, {
+        method: 'POST'
+      })
+
+      const data = await response.json()
+
+      if (response.ok && data.success) {
+        console.log('✅ Sesión grabada exitosamente:', data)
+
+        alert(`✅ Sesión grabada exitosamente para ${platformNames[platform]}!\n\nDetalles:\n- Cookies: ${data.details.cookiesCount}\n- LocalStorage: ${data.details.localStorageItems}\n- SessionStorage: ${data.details.sessionStorageItems}\n\nAhora puedes usar "Iniciar Sesión" para login automático sin necesidad de hacerlo manualmente.`)
+
+        // Recargar el estado para reflejar los cambios
+        await loadStatus()
+
+      } else {
+        console.error('❌ Error en grabación:', data)
+
+        if (data.error === 'No se puede conectar a Chrome') {
+          // Mostrar instrucciones específicas
+          const instructions = data.instructions?.join('\n') || 'Asegúrate de que Chrome esté abierto con --remote-debugging-port=9222'
+          alert(`❌ ${data.message}\n\nINSTRUCCIONES:\n${instructions}\n\nComando manual: npm run open:chrome ${platform}`)
+        } else {
+          alert(`❌ Error al grabar sesión: ${data.error || data.message}`)
+        }
+      }
+
+    } catch (error) {
+      console.error('❌ Error al grabar sesión:', error)
+      alert(`❌ Error al grabar sesión: ${error instanceof Error ? error.message : 'Error desconocido'}`)
+    } finally {
+      setRecordingPlatform(null)
     }
   }
 
@@ -205,7 +367,7 @@ export function PlatformStatusCard() {
         // Actualizar estado después de autenticación exitosa
         setStatus(prev => {
           if (!prev) return prev
-          return {
+          const updatedStatus = {
             ...prev,
             [platform]: {
               ...prev[platform],
@@ -214,6 +376,18 @@ export function PlatformStatusCard() {
               errorDetails: null
             }
           }
+          console.log(`✅ Estado actualizado para ${platform}:`, updatedStatus[platform])
+
+          // Guardar estado de autenticación en localStorage
+          try {
+            const authStatus = { ...updatedStatus }
+            localStorage.setItem('platformAuthStatus', JSON.stringify(authStatus))
+            console.log(`💾 Estado de autenticación guardado para ${platform}`)
+          } catch (error) {
+            console.warn('Error guardando estado en localStorage:', error)
+          }
+
+          return updatedStatus
         })
         
         setDebugLogs(prev => [...prev, {
@@ -327,10 +501,15 @@ export function PlatformStatusCard() {
 
   const getStatusBadge = (platform: keyof PlatformStatus) => {
     const status = getPlatformStatus(platform)
+    const hasRecordedSession = recordedSessions[platform] || false
+
     if (!status) return <Badge variant="outline">Unknown</Badge>
-    
-    if (status.isReady) {
+
+    // Prioridad: Autenticado > Sesión grabada > Credenciales > Sin credenciales
+    if (status.isAuthenticated) {
       return <Badge className="bg-green-500">Ready</Badge>
+    } else if (hasRecordedSession) {
+      return <Badge className="bg-blue-500">Session Available</Badge>
     } else if (status.hasCredentials) {
       return <Badge className="bg-yellow-500">Auth Failed</Badge>
     } else {
@@ -487,6 +666,25 @@ export function PlatformStatusCard() {
                   </div>
                   <div className="flex items-center gap-2">
                     {getStatusBadge(platform)}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => recordSession(platform)}
+                      disabled={recordingPlatform !== null || authenticatingPlatform !== null}
+                      className="ml-2 transition-all duration-200 hover:bg-red-50 dark:hover:bg-red-950 border-red-300 text-red-700 dark:border-red-700 dark:text-red-300"
+                    >
+                      {recordingPlatform === platform ? (
+                        <>
+                          <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                          Grabando...
+                        </>
+                      ) : (
+                        <>
+                          <Video className="h-3 w-3 mr-1" />
+                          Grabar Sesión
+                        </>
+                      )}
+                    </Button>
                     {hasCredentials && (
                       <Button
                         variant="outline"

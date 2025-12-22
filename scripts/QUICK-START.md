@@ -1,4 +1,4 @@
-# 🚀 Inicio Rápido - Grabación de Login
+# 🚀 Inicio Rápido - Grabación de Login con Sesión
 
 ## Pasos Rápidos
 
@@ -7,49 +7,65 @@
 npx playwright install chromium
 ```
 
-### 2. Grabar el login de Upwork
+### 2. Abrir Chrome para login manual
 ```bash
-npm run record:upwork
+npm run open:chrome upwork
 ```
 
-### 3. En el navegador que se abre:
-- Haz clic en "Sign in with Google"
-- Ingresa tu email de Google
-- Ingresa tu contraseña
-- Completa el login normalmente
-- **Cierra la ventana de Codegen** cuando termines
+### 3. En Chrome que se abre:
+- Ve a la página de login si no estás ahí
+- Haz login manualmente (email, contraseña, etc.)
+- Navega por la plataforma para probar que funciona
+- **NO cierres Chrome todavía**
 
-### 4. Revisar el código generado
+### 4. Registrar la sesión autenticada
 ```bash
-cat scripts/generated/upwork-login-recorded.ts
+npm run record:session upwork
 ```
 
-### 5. Copiar y adaptar a tu código
-- Abre `scripts/generated/upwork-login-recorded.ts`
-- Copia las partes relevantes a `lib/platform-auth.ts`
-- Ajusta las credenciales para usar las del `.env`
+### 5. Revisar el código generado
+```bash
+cat scripts/generated/upwork-session-recorded.ts
+```
+
+### 6. Probar el login automático
+- El código generado usa las cookies de tu sesión
+- Si la sesión expira, tiene fallback a login manual
+- Copia la función a `lib/platform-auth.ts`
 
 ## 📝 Para Otras Plataformas
 
+Sigue los mismos pasos pero cambiando la plataforma:
+
 ```bash
-npm run record:glassdoor  # Glassdoor
-npm run record:indeed     # Indeed
-npm run record:hireline   # Hireline
+# 1. Abrir Chrome para login manual
+npm run open:chrome glassdoor
+npm run open:chrome indeed
+npm run open:chrome hireline
+npm run open:chrome linkedin
+
+# 2. Registrar la sesión autenticada
+npm run record:session glassdoor
+npm run record:session indeed
+npm run record:session hireline
+npm run record:session linkedin
 ```
 
 ## 🎯 Ventajas
 
-- ✅ **Grabación automática**: No necesitas escribir código
-- ✅ **Interacción manual**: Puedes hacer el login a tu ritmo
-- ✅ **Captcha friendly**: Puedes resolver captchas manualmente
-- ✅ **Código listo**: El código generado está listo para usar
-- ✅ **Fácil de adaptar**: Solo necesitas ajustar selectores si cambian
+- ✅ **Login manual**: Tú controlas el proceso de autenticación
+- ✅ **Captura de sesión**: Registra cookies y datos de sesión reales
+- ✅ **Código funcional**: Incluye datos de autenticación reales
+- ✅ **Fallback automático**: Si la sesión expira, puede hacer login manual
+- ✅ **Sin grabación compleja**: No necesitas recordar secuencias exactas
 
 ## 💡 Tips
 
-- Si los selectores no funcionan después, vuelve a grabar
-- Puedes grabar múltiples veces para mejorar el flujo
-- El código generado es un buen punto de partida, no necesariamente perfecto
+- Mantén Chrome abierto entre los pasos
+- Si la sesión expira, repite el proceso
+- Las cookies pueden durar días o semanas
+- Puedes reutilizar el mismo Chrome para múltiples plataformas
+- Si hay cambios en la UI, puede que necesites repetir
 
 
 
